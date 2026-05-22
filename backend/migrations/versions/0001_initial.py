@@ -81,6 +81,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("telegram_id"),
     )
     op.create_index("idx_users_telegram_id", "users", ["telegram_id"], unique=False)
+    op.create_index("idx_users_username", "users", ["username"], unique=False)
 
     op.create_table(
         "ads",
@@ -286,6 +287,7 @@ def downgrade() -> None:
     op.drop_index("idx_ads_status_side_created", table_name="ads")
     op.drop_index("idx_ads_pair", table_name="ads")
     op.drop_table("ads")
+    op.drop_index("idx_users_username", table_name="users")
     op.drop_index("idx_users_telegram_id", table_name="users")
     op.drop_table("users")
     op.drop_table("required_channels")

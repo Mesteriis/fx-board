@@ -22,3 +22,8 @@ async def test_sqlite_pragmas_and_tables(test_session) -> None:
         "user_channel_memberships",
         "users",
     }.issubset(tables)
+
+    result = await test_session.execute(text("PRAGMA index_list('users')"))
+    user_indexes = {row[1] for row in result.all()}
+
+    assert "idx_users_username" in user_indexes

@@ -21,7 +21,10 @@ from app.db.base import Base
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (Index("idx_users_telegram_id", "telegram_id"),)
+    __table_args__ = (
+        Index("idx_users_telegram_id", "telegram_id"),
+        Index("idx_users_username", "username"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     telegram_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
