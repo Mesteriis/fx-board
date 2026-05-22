@@ -231,3 +231,11 @@ class ContactAttempt(Base):
     author_answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+Index(
+    "idx_contact_attempts_one_opened_per_initiator",
+    ContactAttempt.initiator_user_id,
+    unique=True,
+    sqlite_where=ContactAttempt.status == "OPENED",
+)

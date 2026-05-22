@@ -50,6 +50,29 @@ async def require_channel_access(
     return user
 
 
+async def require_mutating_user(
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    user: Annotated[User, Depends(require_current_user)],
+    telegram_client: Annotated[TelegramMembershipClient, Depends(get_telegram_client)],
+) -> User:
+    try:
+        access = await ensure_required_channels(
+            db,
+            user=user,
+            settings=settings,
+            telegram_client=telegram_client,
+        )
+    except TelegramApiError as exc:
+        logger.warning("Telegram membership check failed", exc_info=True)
+        raise ForbiddenError("could not verify required channel access") from exc
+    await db.commit()
+    if not access.allowed:
+        raise ForbiddenError("required channel membership missing")
+    return user
+
+
 async def optional_current_user(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -70,8 +93,7 @@ async def create_ad(
     payload: AdCreateRequest,
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-    user: Annotated[User, Depends(require_channel_access)],
-    _csrf: Annotated[None, Depends(require_csrf)],
+    user: Annotated[User, Depends(require_mutating_user)],
 ) -> AdDetailResponse:
     # Task 5 rate-limit enforcement belongs at this boundary once core.limits exists.
     ad = await ads_service.create_ad(db, user=user, payload=payload, settings=settings)
@@ -85,12 +107,14 @@ async def list_ads(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AdsBySideResponse:
-    ads, total = await ads_service.list_active_ads(db, limit=limit, offset=offset)
-    sell = [ads_service.ad_list_item_response(ad) for ad in ads if ad.side == "SELL"]
-    buy = [ads_service.ad_list_item_response(ad) for ad in ads if ad.side == "BUY"]
+    sell_ads, buy_ads, total = await ads_service.list_active_ads_by_side(
+        db,
+        limit=limit,
+        offset=offset,
+    )
     return AdsBySideResponse(
-        sell=sell,
-        buy=buy,
+        sell=[ads_service.ad_list_item_response(ad) for ad in sell_ads],
+        buy=[ads_service.ad_list_item_response(ad) for ad in buy_ads],
         pagination=PaginationResponse(limit=limit, offset=offset, total=total),
     )
 
@@ -125,8 +149,7 @@ async def update_ad(
     ad_id: int,
     payload: AdUpdateRequest,
     db: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[User, Depends(require_channel_access)],
-    _csrf: Annotated[None, Depends(require_csrf)],
+    user: Annotated[User, Depends(require_mutating_user)],
 ) -> AdDetailResponse:
     ad = await ads_service.update_ad(db, ad_id=ad_id, user=user, payload=payload)
     await db.commit()
@@ -137,8 +160,7 @@ async def update_ad(
 async def revoke_ad(
     ad_id: int,
     db: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[User, Depends(require_channel_access)],
-    _csrf: Annotated[None, Depends(require_csrf)],
+    user: Annotated[User, Depends(require_mutating_user)],
 ) -> AdDetailResponse:
     ad = await ads_service.revoke_ad(db, ad_id=ad_id, user=user)
     await db.commit()
@@ -150,8 +172,7 @@ async def contact_ad(
     ad_id: int,
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-    user: Annotated[User, Depends(require_channel_access)],
-    _csrf: Annotated[None, Depends(require_csrf)],
+    user: Annotated[User, Depends(require_mutating_user)],
 ) -> ContactAttemptResponse:
     # Task 5 rate-limit enforcement belongs at this boundary once core.limits exists.
     contact_attempt, telegram_url = await contacts_service.create_contact_attempt(

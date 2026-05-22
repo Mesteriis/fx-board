@@ -1,7 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -35,6 +35,7 @@ async def create_ad(
     payload: AdCreateRequest,
     settings: Settings,
 ) -> Ad:
+    await begin_sqlite_immediate(db)
     await ensure_active_ad_limit(db, user_id=user.id, settings=settings)
     now = utc_now()
     expires_at = payload.expires_at or now + timedelta(hours=settings.ad_default_ttl_hours)
@@ -81,25 +82,32 @@ async def ensure_active_ad_limit(
         raise AppError("active ad limit reached")
 
 
-async def list_active_ads(
+async def list_active_ads_by_side(
     db: AsyncSession,
     *,
     limit: int,
     offset: int,
-) -> tuple[list[Ad], int]:
+) -> tuple[list[Ad], list[Ad], int]:
     now = utc_now()
     base_query = Ad.status == ACTIVE, Ad.expires_at > now
     total = (
         await db.execute(select(func.count()).select_from(Ad).where(*base_query))
     ).scalar_one()
-    result = await db.execute(
+    sell_result = await db.execute(
         select(Ad)
-        .where(*base_query)
+        .where(*base_query, Ad.side == "SELL")
         .order_by(Ad.created_at.desc(), Ad.id.desc())
         .limit(limit)
         .offset(offset)
     )
-    return list(result.scalars().all()), total
+    buy_result = await db.execute(
+        select(Ad)
+        .where(*base_query, Ad.side == "BUY")
+        .order_by(Ad.created_at.desc(), Ad.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(sell_result.scalars().all()), list(buy_result.scalars().all()), total
 
 
 async def list_my_ads(
@@ -181,12 +189,25 @@ async def update_ad(
 
 async def revoke_ad(db: AsyncSession, *, ad_id: int, user: User) -> Ad:
     ad = await get_owned_ad(db, ad_id=ad_id, user=user)
+    if ad.status == REVOKED:
+        return ad
+    if ad.status != ACTIVE:
+        raise ForbiddenError("only active ads can be revoked")
     now = utc_now()
     ad.status = REVOKED
     ad.revoked_at = now
     ad.updated_at = now
     await db.flush()
     return ad
+
+
+async def begin_sqlite_immediate(db: AsyncSession) -> None:
+    bind = db.get_bind()
+    if bind.dialect.name != "sqlite":
+        return
+    if db.in_transaction():
+        await db.commit()
+    await db.execute(text("BEGIN IMMEDIATE"))
 
 
 def ad_list_item_response(ad: Ad) -> AdListItemResponse:

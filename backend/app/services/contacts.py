@@ -7,7 +7,7 @@ from app.core.config import Settings
 from app.core.errors import ForbiddenError
 from app.core.time import utc_now
 from app.db.models import Ad, ContactAttempt, User
-from app.services.ads import ACTIVE, NotFoundError
+from app.services.ads import ACTIVE, NotFoundError, begin_sqlite_immediate
 
 OPENED = "OPENED"
 CANCELED_BY_NEW_CONTACT = "CANCELED_BY_NEW_CONTACT"
@@ -20,6 +20,7 @@ async def create_contact_attempt(
     initiator: User,
     settings: Settings,
 ) -> tuple[ContactAttempt, str]:
+    await begin_sqlite_immediate(db)
     result = await db.execute(
         select(Ad, User).join(User, User.id == Ad.user_id).where(Ad.id == ad_id)
     )

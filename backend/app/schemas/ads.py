@@ -17,6 +17,8 @@ class AuthorResponse(BaseModel):
 
 
 class AdCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     side: AdSide
     base_currency: Currency
     quote_currency: Currency

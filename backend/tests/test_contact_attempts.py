@@ -1,6 +1,8 @@
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utc_now
 from app.db.models import Ad, ContactAttempt, User, UserChannelMembership
@@ -106,6 +108,37 @@ async def test_contact_rejects_missing_and_invalid_csrf(client, authenticate) ->
     assert invalid_response.json()["message"] == "invalid csrf token"
 
 
+async def test_invalid_csrf_does_not_check_required_channel_on_contact(
+    client_with_required_channel,
+    fake_telegram_client,
+    authenticate,
+    test_session,
+) -> None:
+    author_csrf = await authenticate(
+        client_with_required_channel,
+        telegram_id=5151,
+        username="author",
+    )
+    ad_id = await create_ad(client_with_required_channel, author_csrf)
+    await authenticate(
+        client_with_required_channel,
+        telegram_id=5152,
+        username="initiator",
+    )
+    await expire_required_channel_membership(test_session, telegram_id=5152)
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+    call_count = len(fake_telegram_client.calls)
+
+    response = await client_with_required_channel.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": "invalid"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "invalid csrf token"
+    assert len(fake_telegram_client.calls) == call_count
+
+
 async def test_required_channel_denies_contact(
     client_with_required_channel,
     fake_telegram_client,
@@ -195,6 +228,44 @@ async def test_contact_cancels_previous_opened_attempt_for_same_initiator_and_ad
         await test_session.execute(select(ContactAttempt).order_by(ContactAttempt.id))
     ).scalars().all()
     assert [attempt.status for attempt in attempts] == ["CANCELED_BY_NEW_CONTACT", "OPENED"]
+
+
+async def test_database_rejects_two_opened_contacts_for_same_initiator(
+    client,
+    authenticate,
+    test_session,
+) -> None:
+    author_csrf = await authenticate(client, telegram_id=5013, username="author")
+    ad_id = await create_ad(client, author_csrf)
+    initiator_csrf = await authenticate(client, telegram_id=5014, username="initiator")
+    first_contact = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    assert first_contact.status_code == 201
+
+    initiator = (
+        await test_session.execute(select(User).where(User.telegram_id == 5014))
+    ).scalar_one()
+    author = (
+        await test_session.execute(select(User).where(User.telegram_id == 5013))
+    ).scalar_one()
+    now = utc_now()
+    test_session.add(
+        ContactAttempt(
+            initiator_user_id=initiator.id,
+            author_user_id=author.id,
+            ad_id=ad_id,
+            status="OPENED",
+            followup_due_at=now + timedelta(hours=2),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        await test_session.commit()
+    await test_session.rollback()
 
 
 async def test_contact_rejects_non_active_ad(client, authenticate, test_session) -> None:
