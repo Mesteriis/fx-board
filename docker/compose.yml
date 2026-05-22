@@ -1,0 +1,36 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    env_file:
+      - path: ../.env
+        required: false
+    volumes:
+      - ../data:/app/backend/data
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+    environment:
+      NUXT_PUBLIC_API_BASE: /api
+      NUXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-your_bot}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+  bot:
+    build:
+      context: ..
+      dockerfile: docker/bot.Dockerfile
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      BACKEND_BASE_URL: http://api:8000
+    depends_on:
+      - api

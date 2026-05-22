@@ -17,5 +17,7 @@ node_modules/
 .output/
 dist/
 coverage/
+test-results/
+frontend/test-results/
 
 .DS_Store
