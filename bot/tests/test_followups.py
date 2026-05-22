@@ -4,6 +4,7 @@ from fx_board_bot.followups import (
     send_author_confirmation_prompt,
     send_due_prompts,
 )
+from fx_board_bot.messages import COMPLIANCE_NOTICE
 
 
 class FakeBot:
@@ -59,6 +60,7 @@ def test_build_initiator_prompt_includes_deal_summary() -> None:
 
     assert "#5" in text
     assert "SELL 100.00000000 USD/RUB" in text
+    assert COMPLIANCE_NOTICE in text
 
 
 async def test_send_due_prompts_sends_initiator_message_with_keyboard() -> None:
@@ -142,6 +144,7 @@ async def test_send_author_confirmation_prompt_uses_author_chat() -> None:
     chat_id, text, reply_markup = bot.messages[0]
     assert chat_id == 5678
     assert "BUY 250.00000000 EUR/USD" in text
+    assert COMPLIANCE_NOTICE in text
     assert reply_markup.inline_keyboard[0][1].callback_data == "deal:78:no"
 
 

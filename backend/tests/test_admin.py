@@ -127,10 +127,10 @@ async def test_admin_dashboard_includes_latest_rates_status(
         Rate(
             pair="USD/RUB",
             rate=Decimal("92.5000"),
-            source="googlefinance",
+            source="cbr",
             rate_date=today,
             fetched_at=fetched_at,
-            raw_payload="csv",
+            raw_payload="xml",
         )
     )
     await test_session.commit()

@@ -4,13 +4,14 @@ import json
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
+from db_helpers import get_test_database_url, reset_database
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.core.time import utc_now
-from app.db.base import Base
 from app.db.models import RequiredChannel, Session, User, UserChannelMembership
 from app.db.session import create_engine, get_session
 from app.main import create_app
@@ -96,6 +97,82 @@ async def test_successful_auth_updates_existing_user(client, test_session) -> No
     assert users[0].username == "updated"
 
 
+async def test_dev_auth_is_unavailable_by_default(client) -> None:
+    response = await client.post("/api/auth/dev", params={"tg_id": 777, "dev_token": "test"})
+
+    assert response.status_code == 404
+
+
+async def test_dev_auth_requires_non_production_env(client, test_settings) -> None:
+    test_settings.app_env = "production"
+    test_settings.dev_auth_enabled = True
+    test_settings.dev_auth_token = SecretStr("test")
+
+    response = await client.post("/api/auth/dev", params={"tg_id": 777, "dev_token": "test"})
+
+    assert response.status_code == 404
+
+
+async def test_dev_auth_can_be_explicitly_enabled_in_production_for_staging(
+    client,
+    test_settings,
+) -> None:
+    test_settings.app_env = "production"
+    test_settings.dev_auth_enabled = True
+    test_settings.dev_auth_allow_production = True
+    test_settings.dev_auth_token = SecretStr("test")
+
+    response = await client.post("/api/auth/dev", params={"tg_id": 777, "dev_token": "test"})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["telegram_id"] == 777
+
+
+async def test_dev_auth_requires_configured_token(client, test_settings) -> None:
+    test_settings.dev_auth_enabled = True
+
+    response = await client.post("/api/auth/dev", params={"tg_id": 777, "dev_token": "test"})
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "invalid dev auth token"
+
+
+async def test_dev_auth_creates_session_and_bypasses_required_channels(
+    client_with_required_channel,
+    fake_telegram_client,
+    test_settings,
+    test_session,
+) -> None:
+    test_settings.dev_auth_enabled = True
+    test_settings.dev_auth_token = SecretStr("test")
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+
+    response = await client_with_required_channel.post(
+        "/api/auth/dev",
+        params={"tg_id": 777, "dev_token": "test"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user"]["telegram_id"] == 777
+    assert body["user"]["username"] == "dev_777"
+    assert body["access"] == {"allowed": True, "required_channels": [], "missing_channels": []}
+    assert body["csrf_token"]
+    assert client_with_required_channel.cookies.get("session")
+    assert fake_telegram_client.calls == []
+
+    user = (await test_session.execute(select(User).where(User.telegram_id == 777))).scalar_one()
+    sessions = (await test_session.execute(select(Session))).scalars().all()
+    assert user.username == "dev_777"
+    assert len(sessions) == 1
+    assert sessions[0].user_id == user.id
+
+    me_response = await client_with_required_channel.get("/api/auth/me")
+    assert me_response.status_code == 200
+    assert me_response.json()["access"]["allowed"] is True
+    assert fake_telegram_client.calls == []
+
+
 async def test_me_requires_session(client) -> None:
     response = await client.get("/api/auth/me")
 
@@ -155,6 +232,30 @@ async def test_auth_checks_required_channels_with_cache(
     assert fake_telegram_client.calls == [("@required", 123)]
 
 
+async def test_required_channel_check_is_disabled_by_default(
+    client,
+    fake_telegram_client,
+    test_settings,
+    test_session,
+) -> None:
+    test_settings.telegram_required_channels = "@required"
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+
+    response = await client.post(
+        "/api/auth/telegram-webapp",
+        json={"init_data": signed_init_data()},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["access"] == {
+        "allowed": True,
+        "required_channels": [],
+        "missing_channels": [],
+    }
+    assert fake_telegram_client.calls == []
+    assert (await test_session.execute(select(RequiredChannel))).scalars().all() == []
+
+
 async def test_auth_denies_missing_required_channel(
     client_with_required_channel,
     fake_telegram_client,
@@ -172,13 +273,10 @@ async def test_auth_denies_missing_required_channel(
 
 
 async def test_denied_channel_auth_persists_negative_cache_without_session_cookie(
-    tmp_path,
     fake_telegram_client,
 ) -> None:
-    database_path = tmp_path / "denied-cache.db"
-    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    engine = create_engine(get_test_database_url())
+    await reset_database(engine)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     settings = Settings(
@@ -188,6 +286,7 @@ async def test_denied_channel_auth_persists_negative_cache_without_session_cooki
         telegram_bot_username="test_bot",
         telegram_webhook_secret="test_webhook_secret",
         telegram_internal_bot_secret="test_internal_bot_secret_long_enough",
+        telegram_required_channels_enabled=True,
         telegram_required_channels="@required",
         admin_telegram_ids="123",
     )

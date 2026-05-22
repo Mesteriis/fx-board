@@ -1,26 +1,28 @@
 <script setup lang="ts">
-import type { AdCreatePayload, AdResponse, AdSide, Currency } from '~/types/api'
+import type { AdCreatePayload, AdResponse, Currency, PaymentMethod } from '~/types/api'
 
-const route = useRoute()
 const { apiFetch } = useApi()
 
 const emit = defineEmits<{
   created: [ad: AdResponse]
 }>()
 
-const side = ref<AdSide>(route.query.side === 'BUY' ? 'BUY' : 'SELL')
 const baseCurrency = ref<Currency>('USD')
 const quoteCurrency = ref<Currency>('RUB')
 const amount = ref('')
-const minAmount = ref('')
-const maxAmount = ref('')
-const rate = ref('')
-const paymentMethod = ref('')
+const paymentMethods = ref<PaymentMethod[]>(['CASH'])
 const location = ref('')
-const comment = ref('')
 const error = ref<string | null>(null)
 const createdAd = ref<AdResponse | null>(null)
 const busy = ref(false)
+
+const paymentMethodOptions: Array<{ value: PaymentMethod; label: string }> = [
+  { value: 'CASH', label: 'Наличные' },
+  { value: 'TRANSFER', label: 'Перевод' },
+  { value: 'CRYPTO', label: 'Крипта' }
+]
+
+const requiresMeetingPlace = computed(() => paymentMethods.value.includes('CASH'))
 
 async function submit() {
   error.value = null
@@ -29,18 +31,21 @@ async function submit() {
     error.value = 'Валюты не должны совпадать'
     return
   }
+  if (!paymentMethods.value.length) {
+    error.value = 'Выберите вид расчета'
+    return
+  }
+  if (requiresMeetingPlace.value && !location.value.trim()) {
+    error.value = 'Укажите место встречи'
+    return
+  }
 
   const payload: AdCreatePayload = {
-    side: side.value,
     base_currency: baseCurrency.value,
     quote_currency: quoteCurrency.value,
     amount: amount.value,
-    min_amount: minAmount.value || null,
-    max_amount: maxAmount.value || null,
-    rate: rate.value,
-    payment_method: paymentMethod.value || null,
-    location: location.value || null,
-    comment: comment.value || null
+    payment_method: [...paymentMethods.value],
+    location: requiresMeetingPlace.value ? location.value.trim() : null
   }
 
   busy.value = true
@@ -73,35 +78,29 @@ function messageFromError(errorValue: unknown) {
 
 <template>
   <form class="form-panel" @submit.prevent="submit">
-    <div class="segmented-control" aria-label="Тип объявления">
-      <button type="button" :class="{ active: side === 'SELL' }" @click="side = 'SELL'">
-        Продам
-      </button>
-      <button type="button" :class="{ active: side === 'BUY' }" @click="side = 'BUY'">
-        Куплю
-      </button>
-    </div>
-
-    <div class="form-grid">
-      <CurrencySelector v-model="baseCurrency" label="Валюта" />
-      <CurrencySelector v-model="quoteCurrency" label="Расчет" />
+    <div class="form-grid form-grid--simple-ad">
+      <CurrencySelector v-model="baseCurrency" label="Продаю" />
       <AmountInput v-model="amount" label="Сумма" />
-      <RateInput v-model="rate" />
-      <AmountInput v-model="minAmount" label="Минимум" />
-      <AmountInput v-model="maxAmount" label="Максимум" />
+      <CurrencySelector v-model="quoteCurrency" label="Хочу" />
+
+      <label class="field">
+        <span>Вид расчета</span>
+        <span class="payment-methods">
+          <label
+            v-for="option in paymentMethodOptions"
+            :key="option.value"
+            class="payment-option"
+          >
+            <input v-model="paymentMethods" type="checkbox" :value="option.value" />
+            <span>{{ option.label }}</span>
+          </label>
+        </span>
+      </label>
     </div>
 
-    <label class="field">
-      <span>Способ расчета</span>
-      <input v-model="paymentMethod" maxlength="120" placeholder="cash, bank, online" />
-    </label>
-    <label class="field">
-      <span>Локация</span>
-      <input v-model="location" maxlength="120" placeholder="Moscow / online" />
-    </label>
-    <label class="field">
-      <span>Комментарий</span>
-      <textarea v-model="comment" maxlength="500" rows="4" />
+    <label v-if="requiresMeetingPlace" class="field">
+      <span>Место встречи</span>
+      <input v-model="location" maxlength="120" placeholder="Город / район / место" />
     </label>
 
     <p v-if="error" class="danger-text">{{ error }}</p>

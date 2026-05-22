@@ -11,9 +11,10 @@ Production requirements:
 
 - Enable HTTPS before registering the Telegram WebApp URL.
 - Forward `X-Forwarded-Proto`, `X-Forwarded-For`, and `Host`.
-- Do not expose the SQLite data volume directly.
+- Do not expose PostgreSQL publicly; keep it on the Docker/private network.
 - Keep `TELEGRAM_BOT_TOKEN`, `SESSION_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, and `TELEGRAM_INTERNAL_BOT_SECRET` only in environment variables.
 - Add the bot as administrator to every required channel used by `TELEGRAM_REQUIRED_CHANNELS`.
+  Enforcement is disabled unless `TELEGRAM_REQUIRED_CHANNELS_ENABLED=true`.
 - Route `/api/telegram/webhook` only through HTTPS and configure Telegram with the same `TELEGRAM_WEBHOOK_SECRET`.
 
 For Traefik or Nginx Proxy Manager, point the frontend service at `web:3000` and add an `/api` location/router to `api:8000`.

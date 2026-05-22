@@ -8,7 +8,7 @@ from app.core.config import Settings
 from app.core.errors import AppError, ForbiddenError
 from app.core.time import utc_now
 from app.db.models import Ad, User
-from app.db.transactions import begin_sqlite_immediate
+from app.db.transactions import begin_write_transaction
 from app.schemas.ads import (
     AdCreateRequest,
     AdDetailResponse,
@@ -17,6 +17,7 @@ from app.schemas.ads import (
     AuthorResponse,
     MyAdsResponse,
     PaginationResponse,
+    payment_method_has_cash,
 )
 
 ACTIVE = "ACTIVE"
@@ -35,26 +36,26 @@ async def create_ad(
     user: User,
     payload: AdCreateRequest,
     settings: Settings,
+    rate: Decimal,
 ) -> Ad:
-    await begin_sqlite_immediate(db)
+    await begin_write_transaction(db)
     await ensure_active_ad_limit(db, user_id=user.id, settings=settings)
     now = utc_now()
-    expires_at = payload.expires_at or now + timedelta(hours=settings.ad_default_ttl_hours)
-    if expires_at <= now:
-        raise AppError("expires_at must be in the future")
+    expires_at = now + timedelta(hours=settings.ad_default_ttl_hours)
+    location = payload.location if payment_method_has_cash(payload.payment_method) else None
 
     ad = Ad(
         user_id=user.id,
-        side=payload.side,
+        side="SELL",
         base_currency=payload.base_currency,
         quote_currency=payload.quote_currency,
         amount=payload.amount,
-        min_amount=payload.min_amount,
-        max_amount=payload.max_amount,
-        rate=payload.rate,
+        min_amount=None,
+        max_amount=None,
+        rate=rate,
         payment_method=payload.payment_method,
-        location=payload.location,
-        comment=payload.comment,
+        location=location,
+        comment=None,
         status=ACTIVE,
         report_count=0,
         expires_at=expires_at,
@@ -173,13 +174,15 @@ async def update_ad(
 ) -> Ad:
     ad = await get_owned_ad(db, ad_id=ad_id, user=user)
     data = payload.model_dump(exclude_unset=True)
-    amount = data.get("amount", ad.amount)
-    min_amount = data.get("min_amount", ad.min_amount)
-    max_amount = data.get("max_amount", ad.max_amount)
-    _validate_update_limits(amount=amount, min_amount=min_amount, max_amount=max_amount)
     expires_at = data.get("expires_at", ad.expires_at)
     if expires_at is not None and expires_at <= utc_now():
         raise AppError("expires_at must be in the future")
+    payment_method = data.get("payment_method", ad.payment_method)
+    location = data.get("location", ad.location)
+    if payment_method_has_cash(payment_method) and not location:
+        raise AppError("location is required for cash payment method")
+    if payment_method is not None and not payment_method_has_cash(payment_method):
+        data["location"] = None
 
     for field_name, value in data.items():
         setattr(ad, field_name, value)

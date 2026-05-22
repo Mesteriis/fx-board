@@ -1,6 +1,7 @@
-export type Currency = 'USD' | 'EUR' | 'RUB' | 'USDT' | 'USDC'
+export type Currency = 'USD' | 'EUR' | 'RUB' | 'USDT' | 'USDC' | 'AR'
 export type AdSide = 'BUY' | 'SELL'
 export type AdStatus = 'ACTIVE' | 'REVOKED' | 'HIDDEN' | 'EXPIRED' | 'COMPLETED'
+export type PaymentMethod = 'CASH' | 'TRANSFER' | 'CRYPTO'
 export type ReportReason =
   | 'SCAM'
   | 'SPAM'
@@ -84,21 +85,16 @@ export interface MyAdsResponse {
 }
 
 export interface AdCreatePayload {
-  side: AdSide
   base_currency: Currency
   quote_currency: Currency
   amount: string
-  min_amount?: string | null
-  max_amount?: string | null
-  rate: string
-  payment_method?: string | null
+  payment_method: PaymentMethod[]
   location?: string | null
-  comment?: string | null
 }
 
 export interface ContactAttemptResponse {
   contact_attempt_id: number
-  telegram_url: string
+  message: string
 }
 
 export interface RateItem {

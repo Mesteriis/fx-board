@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AuthResponse } from '~/types/api'
 
+const route = useRoute()
 const { webApp, getStartParam } = useTelegram()
 const { apiFetch, csrfToken } = useApi()
 const auth = useState<AuthResponse | null>('auth', () => null)
@@ -9,8 +10,8 @@ const outsideTelegram = ref(false)
 const error = ref<string | null>(null)
 
 function targetFromStartParam(startParam: string): string | null {
-  if (startParam === 'new_sell') return '/app/new?side=SELL'
-  if (startParam === 'new_buy') return '/app/new?side=BUY'
+  if (startParam === 'new_sell') return '/app/new'
+  if (startParam === 'new_buy') return '/app/new'
   if (startParam === 'new') return '/app/new'
   if (startParam === 'rates') return '/app/rates'
   if (startParam === 'rules') return '/app/rules'
@@ -22,6 +23,50 @@ function targetFromStartParam(startParam: string): string | null {
 }
 
 onMounted(async () => {
+  const devTelegramId = firstQueryValue(route.query.dev_tg_id)
+  const devToken = firstQueryValue(route.query.dev_token)
+  if (devTelegramId && devToken) {
+    try {
+      const params = new URLSearchParams({ tg_id: devTelegramId, dev_token: devToken })
+      const response = await apiFetch<AuthResponse>(`/auth/dev?${params.toString()}`, {
+        method: 'POST'
+      })
+      await applyAuthResponse(response)
+    } catch (fetchError) {
+      if (isForbidden(fetchError)) {
+        await navigateTo('/app/access-denied')
+        return
+      }
+      error.value = 'Не удалось авторизоваться в dev-режиме'
+    } finally {
+      loading.value = false
+    }
+    return
+  }
+
+  if (auth.value) {
+    await applyAuthResponse(auth.value)
+    loading.value = false
+    return
+  }
+
+  try {
+    const response = await apiFetch<AuthResponse>('/auth/me')
+    await applyAuthResponse(response)
+    loading.value = false
+    return
+  } catch (fetchError) {
+    if (isForbidden(fetchError)) {
+      await navigateTo('/app/access-denied')
+      return
+    }
+    if (!isUnauthorized(fetchError)) {
+      error.value = 'Не удалось проверить сессию'
+      loading.value = false
+      return
+    }
+  }
+
   const tg = webApp.value
   if (!tg?.initData) {
     outsideTelegram.value = true
@@ -37,16 +82,7 @@ onMounted(async () => {
       method: 'POST',
       body: { init_data: tg.initData }
     })
-    csrfToken.value = response.csrf_token
-    auth.value = response
-    if (!response.access.allowed) {
-      await navigateTo('/app/access-denied')
-      return
-    }
-    const startTarget = targetFromStartParam(getStartParam())
-    if (startTarget && useRoute().fullPath === '/app') {
-      await navigateTo(startTarget)
-    }
+    await applyAuthResponse(response)
   } catch (fetchError) {
     if (isForbidden(fetchError)) {
       await navigateTo('/app/access-denied')
@@ -58,13 +94,37 @@ onMounted(async () => {
   }
 })
 
+async function applyAuthResponse(response: AuthResponse) {
+  csrfToken.value = response.csrf_token
+  auth.value = response
+  if (!response.access.allowed) {
+    await navigateTo('/app/access-denied')
+    return
+  }
+  const startTarget = targetFromStartParam(getStartParam())
+  if (startTarget && route.fullPath === '/app') {
+    await navigateTo(startTarget)
+  }
+}
+
+function firstQueryValue(value: unknown) {
+  return typeof value === 'string' ? value : null
+}
+
 function isForbidden(errorValue: unknown) {
-  return (
-    typeof errorValue === 'object' &&
-    errorValue !== null &&
-    'statusCode' in errorValue &&
-    Number((errorValue as { statusCode?: number }).statusCode) === 403
-  )
+  return errorStatusCode(errorValue) === 403
+}
+
+function isUnauthorized(errorValue: unknown) {
+  return errorStatusCode(errorValue) === 401
+}
+
+function errorStatusCode(errorValue: unknown) {
+  if (typeof errorValue !== 'object' || errorValue === null || !('statusCode' in errorValue)) {
+    return null
+  }
+  const statusCode = Number((errorValue as { statusCode?: number }).statusCode)
+  return Number.isFinite(statusCode) ? statusCode : null
 }
 </script>
 

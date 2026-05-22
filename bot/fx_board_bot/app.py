@@ -13,12 +13,14 @@ from .callbacks import decode_deal_callback
 from .commands import admin_commands, public_commands, webapp_keyboard
 from .config import get_bot_settings
 from .followups import poll_contact_followups, send_author_confirmation_prompt
+from .messages import COMPLIANCE_NOTICE
 
 logger = logging.getLogger(__name__)
 
 WELCOME_TEXT = (
     "Добро пожаловать в FX Board.\n\n"
     "Здесь можно размещать объявления о покупке и продаже USD, EUR, RUB, USDT и USDC.\n\n"
+    f"{COMPLIANCE_NOTICE}\n\n"
     "Нажмите кнопку ниже, чтобы открыть приложение."
 )
 
@@ -155,7 +157,7 @@ def _public_command_text(command: str) -> str:
     if command in {"help", "start", "app"}:
         return WELCOME_TEXT
     if command == "rules":
-        return "Правила и требования к доступу доступны в приложении."
+        return f"Правила и требования к доступу доступны в приложении.\n\n{COMPLIANCE_NOTICE}"
     if command == "support":
         return "Откройте приложение, чтобы обратиться в поддержку."
     if command == "report":

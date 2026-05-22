@@ -20,11 +20,11 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "contact_attempts",
-        sa.Column("initiator_prompt_sent_at", sa.String(length=32), nullable=True),
+        sa.Column("initiator_prompt_sent_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.add_column(
         "contact_attempts",
-        sa.Column("author_prompt_sent_at", sa.String(length=32), nullable=True),
+        sa.Column("author_prompt_sent_at", sa.DateTime(timezone=True), nullable=True),
     )
 
 

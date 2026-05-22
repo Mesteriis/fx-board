@@ -21,10 +21,11 @@ from app.schemas.ads import (
 )
 from app.services import ads as ads_service
 from app.services import contacts as contacts_service
+from app.services import rates as rates_service
 from app.services.access import TelegramMembershipClient, ensure_required_channels
 from app.services.auth import require_csrf, require_current_user
 from app.services.sessions import get_valid_session
-from app.telegram.client import TelegramApiError
+from app.telegram.client import TelegramApiError, TelegramBotApiClient
 
 router = APIRouter(prefix="/api/ads", tags=["ads"])
 logger = logging.getLogger(__name__)
@@ -104,7 +105,20 @@ async def create_ad(
         window_seconds=3600,
     )
     await db.commit()
-    ad = await ads_service.create_ad(db, user=user, payload=payload, settings=settings)
+    rate = await rates_service.get_pair_rate(
+        db,
+        settings=settings,
+        base_currency=payload.base_currency,
+        quote_currency=payload.quote_currency,
+    )
+    await db.commit()
+    ad = await ads_service.create_ad(
+        db,
+        user=user,
+        payload=payload,
+        settings=settings,
+        rate=rate,
+    )
     await db.commit()
     return ads_service.ad_detail_response(ad, user)
 
@@ -189,6 +203,7 @@ async def contact_ad(
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     user: Annotated[User, Depends(require_mutating_user)],
+    telegram_client: Annotated[TelegramBotApiClient, Depends(get_telegram_client)],
 ) -> ContactAttemptResponse:
     await check_rate_limit(
         db,
@@ -198,14 +213,15 @@ async def contact_ad(
         window_seconds=3600,
     )
     await db.commit()
-    contact_attempt, telegram_url = await contacts_service.create_contact_attempt(
+    contact_attempt = await contacts_service.create_contact_attempt(
         db,
         ad_id=ad_id,
         initiator=user,
         settings=settings,
+        telegram_client=telegram_client,
     )
     await db.commit()
     return ContactAttemptResponse(
         contact_attempt_id=contact_attempt.id,
-        telegram_url=telegram_url,
+        message="Сообщение отправлено продавцу",
     )

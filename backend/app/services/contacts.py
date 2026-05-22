@@ -1,4 +1,6 @@
 from datetime import timedelta
+from decimal import Decimal
+from typing import Protocol
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,8 +10,9 @@ from app.core.config import Settings
 from app.core.errors import AppError, ForbiddenError
 from app.core.time import utc_now
 from app.db.models import Ad, ContactAttempt, User
-from app.db.transactions import begin_sqlite_immediate
+from app.db.transactions import begin_write_transaction
 from app.services.ads import ACTIVE, NotFoundError
+from app.telegram.client import TelegramApiError
 
 OPENED = "OPENED"
 CANCELED_BY_NEW_CONTACT = "CANCELED_BY_NEW_CONTACT"
@@ -21,9 +24,20 @@ AUTHOR_REJECTED = "AUTHOR_REJECTED"
 EXPIRED = "EXPIRED"
 COMPLETED = "COMPLETED"
 FOLLOWUP_ANSWER_TTL = timedelta(hours=24)
+COMPLIANCE_NOTICE = (
+    "Важно: не скрывайте реальную суть договоренности и не используйте вымышленные "
+    "объяснения. Если по операции запрашивают пояснение, описывайте фактические "
+    "обстоятельства и соблюдайте требования своей юрисдикции. FX Board не проводит "
+    "платежи, не является обменником и не выступает эскроу."
+)
 
 ContactFollowupItem = dict[str, object]
 ContactAnswerResult = dict[str, object]
+
+
+class ContactNotificationClient(Protocol):
+    async def send_message(self, *, chat_id: int, text: str) -> None:
+        ...
 
 
 async def create_contact_attempt(
@@ -32,8 +46,9 @@ async def create_contact_attempt(
     ad_id: int,
     initiator: User,
     settings: Settings,
-) -> tuple[ContactAttempt, str]:
-    await begin_sqlite_immediate(db)
+    telegram_client: ContactNotificationClient,
+) -> ContactAttempt:
+    await begin_write_transaction(db)
     result = await db.execute(
         select(Ad, User).join(User, User.id == Ad.user_id).where(Ad.id == ad_id)
     )
@@ -46,8 +61,8 @@ async def create_contact_attempt(
         raise NotFoundError("ad not found")
     if ad.user_id == initiator.id:
         raise ForbiddenError("cannot contact your own ad")
-    if not author.username:
-        raise ForbiddenError("contact unavailable")
+    if not initiator.username:
+        raise ForbiddenError("buyer contact unavailable")
 
     now = utc_now()
     open_attempts = await db.execute(
@@ -71,7 +86,64 @@ async def create_contact_attempt(
     )
     db.add(contact_attempt)
     await db.flush()
-    return contact_attempt, f"https://t.me/{author.username}"
+
+    try:
+        await telegram_client.send_message(
+            chat_id=author.telegram_id,
+            text=build_author_interest_notification(
+                contact_attempt=contact_attempt,
+                ad=ad,
+                initiator=initiator,
+                membership_check_enabled=settings.telegram_required_channels_enabled,
+            ),
+        )
+    except TelegramApiError as exc:
+        raise AppError("seller notification unavailable") from exc
+
+    return contact_attempt
+
+
+def build_author_interest_notification(
+    *,
+    contact_attempt: ContactAttempt,
+    ad: Ad,
+    initiator: User,
+    membership_check_enabled: bool,
+) -> str:
+    price = ad.amount * ad.rate
+    lines = [
+        "Покупатель заинтересовался вашим объявлением.",
+        "",
+        f"Заявка: #{contact_attempt.id}",
+        f"Объявление: {format_decimal(ad.amount)} {ad.base_currency} -> {ad.quote_currency}",
+        f"Нужно взять: {format_decimal(price)} {ad.quote_currency}",
+    ]
+    if ad.payment_method:
+        lines.append(f"Расчет: {format_payment_methods(ad.payment_method)}")
+    if ad.location:
+        lines.append(f"Место встречи: {ad.location}")
+    if not membership_check_enabled:
+        lines.extend(
+            [
+                "",
+                (
+                    "Внимание: не удалось проверить пользователя на принадлежность к "
+                    "одобренным группам, будьте внимательны."
+                ),
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            COMPLIANCE_NOTICE,
+            "",
+            f"Контакт покупателя: @{initiator.username}",
+            f"https://t.me/{initiator.username}",
+            "",
+            "Если предложение интересно, напишите покупателю напрямую.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 async def claim_due_contact_attempts(
@@ -82,7 +154,7 @@ async def claim_due_contact_attempts(
     if limit < 1:
         raise AppError("limit must be positive")
 
-    await begin_sqlite_immediate(db)
+    await begin_write_transaction(db)
     now = utc_now()
     await _expire_stale_contact_attempts(db, now=now)
     initiator_user = aliased(User)
@@ -134,7 +206,7 @@ async def mark_contact_followup_prompt_sent(
     if normalized_prompt_type not in {"initiator", "author"}:
         raise AppError("invalid prompt type")
 
-    await begin_sqlite_immediate(db)
+    await begin_write_transaction(db)
     row = await _get_contact_attempt_detail(db, contact_attempt_id=contact_attempt_id)
     if row is None:
         raise NotFoundError("contact attempt not found")
@@ -182,7 +254,7 @@ async def apply_contact_answer(
     if normalized_answer not in {"yes", "no"}:
         raise AppError("invalid contact answer")
 
-    await begin_sqlite_immediate(db)
+    await begin_write_transaction(db)
     row = await _get_contact_attempt_detail(db, contact_attempt_id=contact_attempt_id)
     if row is None:
         raise NotFoundError("contact attempt not found")
@@ -295,6 +367,25 @@ def _followup_item(
         "amount": amount,
         "summary": summary,
     }
+
+
+def format_decimal(value: Decimal) -> str:
+    normalized = value.quantize(Decimal("0.00000001")).normalize()
+    text = format(normalized, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def format_payment_methods(payment_method: str) -> str:
+    labels = {
+        "CASH": "Наличные",
+        "TRANSFER": "Перевод",
+        "CRYPTO": "Крипта",
+    }
+    return ", ".join(
+        labels.get(method.strip().upper(), method.strip())
+        for method in payment_method.split(",")
+        if method.strip()
+    )
 
 
 def _answer_result(

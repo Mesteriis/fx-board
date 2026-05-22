@@ -2,6 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -27,7 +28,7 @@ class User(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     username: Mapped[str | None] = mapped_column(String(64))
     first_name: Mapped[str | None] = mapped_column(String(128))
     last_name: Mapped[str | None] = mapped_column(String(128))
@@ -90,11 +91,11 @@ class Ad(Base):
     __table_args__ = (
         CheckConstraint("side IN ('BUY', 'SELL')", name="ck_ads_side"),
         CheckConstraint(
-            "base_currency IN ('USD', 'EUR', 'RUB', 'USDT', 'USDC')",
+            "base_currency IN ('USD', 'EUR', 'RUB', 'USDT', 'USDC', 'AR')",
             name="ck_ads_base_currency",
         ),
         CheckConstraint(
-            "quote_currency IN ('USD', 'EUR', 'RUB', 'USDT', 'USDC')",
+            "quote_currency IN ('USD', 'EUR', 'RUB', 'USDT', 'USDC', 'AR')",
             name="ck_ads_quote_currency",
         ),
         CheckConstraint(
@@ -164,7 +165,7 @@ Index(
     Report.reporter_user_id,
     Report.ad_id,
     unique=True,
-    sqlite_where=Report.ad_id.is_not(None),
+    postgresql_where=Report.ad_id.is_not(None),
 )
 
 
@@ -239,5 +240,5 @@ Index(
     "idx_contact_attempts_one_opened_per_initiator",
     ContactAttempt.initiator_user_id,
     unique=True,
-    sqlite_where=ContactAttempt.status == "OPENED",
+    postgresql_where=ContactAttempt.status == "OPENED",
 )

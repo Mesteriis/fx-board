@@ -30,6 +30,10 @@ async def ensure_required_channels(
 ) -> AccessResponse:
     if user.is_banned:
         return AccessResponse(allowed=False)
+    if settings.dev_auth_available:
+        return AccessResponse(allowed=True)
+    if not settings.telegram_required_channels_enabled:
+        return AccessResponse(allowed=True)
 
     channels = await _get_required_channels(db, settings=settings)
     if not channels:

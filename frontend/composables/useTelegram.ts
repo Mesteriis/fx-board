@@ -20,6 +20,7 @@ declare global {
 
 export function useTelegram() {
   const webApp = computed(() => (import.meta.client ? window.Telegram?.WebApp ?? null : null))
+  const isTelegramWebApp = computed(() => Boolean(webApp.value?.initData))
 
   function getStartParam() {
     const tg = window.Telegram?.WebApp
@@ -35,5 +36,13 @@ export function useTelegram() {
     window.location.href = url
   }
 
-  return { webApp, getStartParam, openTelegramLink }
+  function closeWebApp() {
+    if (!import.meta.client) return false
+    const tg = window.Telegram?.WebApp
+    if (!tg?.close) return false
+    tg.close()
+    return true
+  }
+
+  return { webApp, isTelegramWebApp, getStartParam, openTelegramLink, closeWebApp }
 }

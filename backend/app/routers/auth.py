@@ -1,7 +1,7 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -16,6 +16,7 @@ from app.schemas.auth import AccessResponse, AuthResponse, TelegramWebAppAuthReq
 from app.services.access import TelegramMembershipClient, ensure_required_channels
 from app.services.auth import (
     InitDataError,
+    TelegramUserPayload,
     require_csrf,
     require_current_session,
     require_current_user,
@@ -83,6 +84,63 @@ async def telegram_webapp_auth(
         ttl_seconds=settings.session_ttl_seconds,
         user_agent=request.headers.get("user-agent"),
         ip_hash=ip_hash,
+    )
+    await db.commit()
+
+    signed_csrf_token = sign_csrf_token(
+        session_id=session_id,
+        raw_token=raw_csrf_token,
+        secret=settings.session_secret.get_secret_value(),
+    )
+    _set_auth_cookies(
+        response,
+        settings=settings,
+        session_id=session_id,
+        csrf_token=signed_csrf_token,
+    )
+    return AuthResponse(user=to_user_response(user), access=access, csrf_token=raw_csrf_token)
+
+
+@router.post("/dev", response_model=AuthResponse)
+async def dev_auth(
+    request: Request,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    telegram_client: Annotated[TelegramMembershipClient, Depends(get_telegram_client)],
+    tg_id: Annotated[int, Query(gt=0, le=9_999_999_999)],
+    dev_token: Annotated[str, Query(min_length=1, max_length=256)],
+) -> AuthResponse:
+    if not settings.dev_auth_available:
+        raise HTTPException(status_code=404, detail="Not found")
+    expected_token = (
+        settings.dev_auth_token.get_secret_value() if settings.dev_auth_token else ""
+    )
+    if not expected_token or dev_token != expected_token:
+        raise ForbiddenError("invalid dev auth token")
+
+    telegram_user = TelegramUserPayload(
+        telegram_id=tg_id,
+        username=f"dev_{tg_id}",
+        first_name="Dev",
+        last_name="User",
+        language_code="en",
+        photo_url=None,
+    )
+    user = await upsert_telegram_user(db, telegram_user=telegram_user, admin_ids=settings.admin_ids)
+    if user.is_banned:
+        raise ForbiddenError("user is banned")
+
+    access = await _ensure_access(db, user=user, settings=settings, telegram_client=telegram_client)
+    session_id, raw_csrf_token = await create_session(
+        db,
+        user_id=user.id,
+        ttl_seconds=settings.session_ttl_seconds,
+        user_agent=request.headers.get("user-agent"),
+        ip_hash=hash_ip(
+            request.client.host if request.client else None,
+            settings.session_secret.get_secret_value(),
+        ),
     )
     await db.commit()
 

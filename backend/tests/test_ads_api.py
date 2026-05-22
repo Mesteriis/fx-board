@@ -3,32 +3,30 @@ from decimal import Decimal
 from typing import Literal
 
 import pytest
+from db_helpers import get_test_database_url, reset_database
 from httpx import ASGITransport, AsyncClient
+from rate_helpers import seed_reference_rates_in_session
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.time import utc_now
-from app.db.base import Base
 from app.db.models import Ad, User, UserChannelMembership
 from app.db.session import create_engine, get_session
-from app.db.transactions import begin_sqlite_immediate
+from app.db.transactions import begin_write_transaction
 from app.main import create_app
 from app.routers.auth import get_telegram_client
+
+pytestmark = pytest.mark.usefixtures("seeded_reference_rates")
 
 
 def ad_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "side": "SELL",
         "base_currency": "USD",
         "quote_currency": "RUB",
         "amount": "100.00",
-        "min_amount": "25.00",
-        "max_amount": "100.00",
-        "rate": "92.50",
-        "payment_method": "cash",
+        "payment_method": "CASH",
         "location": "Madrid",
-        "comment": "In person only",
     }
     payload.update(overrides)
     return payload
@@ -58,6 +56,60 @@ async def test_create_rejects_extra_fields(client, authenticate) -> None:
     assert response.status_code == 422
 
 
+async def test_create_rejects_client_supplied_rate(client, authenticate) -> None:
+    csrf_token = await authenticate(client)
+
+    response = await client.post(
+        "/api/ads",
+        json={**ad_payload(), "rate": "1.00"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_create_rejects_removed_ad_fields(client, authenticate) -> None:
+    csrf_token = await authenticate(client)
+
+    response = await client.post(
+        "/api/ads",
+        json={
+            **ad_payload(),
+            "side": "BUY",
+            "min_amount": "10.00",
+            "max_amount": "100.00",
+            "comment": "old field",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_create_requires_meeting_place_for_cash(client, authenticate) -> None:
+    csrf_token = await authenticate(client)
+
+    response = await client.post(
+        "/api/ads",
+        json=ad_payload(location=""),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_create_rejects_online_payment_method(client, authenticate) -> None:
+    csrf_token = await authenticate(client)
+
+    response = await client.post(
+        "/api/ads",
+        json=ad_payload(payment_method=["ONLINE"]),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 422
+
+
 async def test_invalid_csrf_does_not_check_required_channel_on_create(
     client_with_required_channel,
     fake_telegram_client,
@@ -80,47 +132,76 @@ async def test_invalid_csrf_does_not_check_required_channel_on_create(
     assert len(fake_telegram_client.calls) == call_count
 
 
-async def test_successful_create_and_list_split(client, authenticate) -> None:
+async def test_successful_create_defaults_to_sell_and_lists_sales(
+    client,
+    authenticate,
+) -> None:
     first_csrf = await authenticate(client, telegram_id=1001, username="seller")
-    sell_response = await client.post(
+    first_response = await client.post(
         "/api/ads",
-        json=ad_payload(side="SELL", base_currency="USD", quote_currency="RUB"),
+        json=ad_payload(
+            base_currency="USD",
+            quote_currency="RUB",
+            payment_method=["CASH", "CRYPTO"],
+        ),
         headers={"X-CSRF-Token": first_csrf},
     )
-    assert sell_response.status_code == 201
+    assert first_response.status_code == 201
+    assert first_response.json()["side"] == "SELL"
+    assert Decimal(first_response.json()["rate"]) == Decimal("92.50")
+    assert first_response.json()["payment_method"] == "CASH,CRYPTO"
+    assert first_response.json()["location"] == "Madrid"
+    assert first_response.json()["min_amount"] is None
+    assert first_response.json()["max_amount"] is None
+    assert first_response.json()["comment"] is None
 
-    second_csrf = await authenticate(client, telegram_id=1002, username="buyer")
-    buy_response = await client.post(
+    second_csrf = await authenticate(client, telegram_id=1002, username="seller_two")
+    second_response = await client.post(
         "/api/ads",
-        json=ad_payload(side="BUY", base_currency="EUR", quote_currency="USD", rate="1.08"),
+        json=ad_payload(
+            base_currency="EUR",
+            quote_currency="USD",
+            payment_method=["TRANSFER", "CRYPTO"],
+            location="",
+        ),
         headers={"X-CSRF-Token": second_csrf},
     )
-    assert buy_response.status_code == 201
+    assert second_response.status_code == 201
+    assert Decimal(second_response.json()["rate"]) == Decimal("1.0832")
+    assert second_response.json()["payment_method"] == "TRANSFER,CRYPTO"
+    assert second_response.json()["location"] is None
 
     response = await client.get("/api/ads")
 
     assert response.status_code == 200
     body = response.json()
-    assert [ad["id"] for ad in body["sell"]] == [sell_response.json()["id"]]
-    assert [ad["id"] for ad in body["buy"]] == [buy_response.json()["id"]]
+    assert [ad["id"] for ad in body["sell"]] == [
+        second_response.json()["id"],
+        first_response.json()["id"],
+    ]
+    assert body["buy"] == []
     assert body["pagination"] == {"limit": 20, "offset": 0, "total": 2}
 
 
-async def test_list_first_page_does_not_starve_buy_side(client, authenticate) -> None:
-    buyer_csrf = await authenticate(client, telegram_id=1011, username="buyer")
-    buy_response = await client.post(
-        "/api/ads",
-        json=ad_payload(side="BUY", base_currency="EUR", quote_currency="USD", rate="1.08"),
-        headers={"X-CSRF-Token": buyer_csrf},
-    )
-    assert buy_response.status_code == 201
+async def test_create_allows_ar_currency_pair(client, authenticate) -> None:
+    csrf_token = await authenticate(client, telegram_id=1003, username="ar_seller")
 
+    response = await client.post(
+        "/api/ads",
+        json=ad_payload(base_currency="AR", quote_currency="RUB"),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 201
+    assert Decimal(response.json()["rate"]) == Decimal("231.25")
+
+
+async def test_list_first_page_limits_sales_without_buy_column(client, authenticate) -> None:
     seller_csrf = await authenticate(client, telegram_id=1010, username="seller")
     for index in range(5):
         response = await client.post(
             "/api/ads",
             json=ad_payload(
-                side="SELL",
                 base_currency="USD",
                 quote_currency="RUB",
                 amount=str(100 + index),
@@ -134,7 +215,7 @@ async def test_list_first_page_does_not_starve_buy_side(client, authenticate) ->
     assert response.status_code == 200
     body = response.json()
     assert len(body["sell"]) == 3
-    assert [ad["id"] for ad in body["buy"]] == [buy_response.json()["id"]]
+    assert body["buy"] == []
 
 
 async def test_active_ad_limit_is_enforced(client, authenticate, test_settings) -> None:
@@ -172,7 +253,7 @@ async def test_active_ad_limit_allows_exact_boundary_only(
     )
     second_response = await client.post(
         "/api/ads",
-        json=ad_payload(base_currency="EUR", quote_currency="USD", rate="1.08"),
+        json=ad_payload(base_currency="EUR", quote_currency="USD"),
         headers={"X-CSRF-Token": csrf_token},
     )
     third_response = await client.post(
@@ -187,7 +268,7 @@ async def test_active_ad_limit_allows_exact_boundary_only(
     assert third_response.json()["message"] == "active ad limit reached"
 
 
-async def test_begin_sqlite_immediate_does_not_commit_caller_transaction(
+async def test_begin_write_transaction_preserves_caller_transaction(
     test_session,
 ) -> None:
     now = utc_now()
@@ -206,8 +287,7 @@ async def test_begin_sqlite_immediate_does_not_commit_caller_transaction(
 
     user.username = "pending"
 
-    with pytest.raises(RuntimeError):
-        await begin_sqlite_immediate(test_session)
+    await begin_write_transaction(test_session)
 
     await test_session.rollback()
     persisted_user = (
@@ -263,11 +343,11 @@ async def test_update_rejects_immutable_fields(client, authenticate, test_sessio
     assert ad.user_id != 999
 
 
-async def test_update_allows_mutable_fields(client, authenticate, test_session) -> None:
+async def test_update_rejects_client_supplied_rate(client, authenticate, test_session) -> None:
     csrf_token = await authenticate(client)
     create_response = await client.post(
         "/api/ads",
-        json=ad_payload(comment="before"),
+        json=ad_payload(),
         headers={"X-CSRF-Token": csrf_token},
     )
     assert create_response.status_code == 201
@@ -275,19 +355,42 @@ async def test_update_allows_mutable_fields(client, authenticate, test_session) 
 
     response = await client.patch(
         f"/api/ads/{ad_id}",
-        json={"amount": "75.00", "max_amount": "75.00", "rate": "93.00", "comment": "after"},
+        json={"rate": "1.00"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 422
+    ad = await test_session.get(Ad, ad_id)
+    assert ad is not None
+    assert ad.rate == Decimal("92.50000000")
+
+
+async def test_update_allows_mutable_fields(client, authenticate, test_session) -> None:
+    csrf_token = await authenticate(client)
+    create_response = await client.post(
+        "/api/ads",
+        json=ad_payload(),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert create_response.status_code == 201
+    ad_id = create_response.json()["id"]
+
+    response = await client.patch(
+        f"/api/ads/{ad_id}",
+        json={"amount": "75.00", "payment_method": ["TRANSFER", "CRYPTO"], "location": ""},
         headers={"X-CSRF-Token": csrf_token},
     )
 
     assert response.status_code == 200
     body = response.json()
     assert Decimal(body["amount"]) == Decimal("75.00")
-    assert Decimal(body["rate"]) == Decimal("93.00")
-    assert body["comment"] == "after"
+    assert Decimal(body["rate"]) == Decimal("92.50")
+    assert body["payment_method"] == "TRANSFER,CRYPTO"
+    assert body["location"] is None
     ad = await test_session.get(Ad, ad_id)
     assert ad is not None
     assert ad.amount == Decimal("75.00000000")
-    assert ad.rate == Decimal("93.00000000")
+    assert ad.rate == Decimal("92.50000000")
 
 
 async def test_update_rejects_missing_and_invalid_csrf(client, authenticate) -> None:
@@ -302,11 +405,11 @@ async def test_update_rejects_missing_and_invalid_csrf(client, authenticate) -> 
 
     missing_response = await client.patch(
         f"/api/ads/{ad_id}",
-        json={"comment": "missing csrf"},
+        json={"amount": "75.00"},
     )
     invalid_response = await client.patch(
         f"/api/ads/{ad_id}",
-        json={"comment": "invalid csrf"},
+        json={"amount": "75.00"},
         headers={"X-CSRF-Token": "invalid"},
     )
 
@@ -335,7 +438,7 @@ async def test_invalid_csrf_does_not_check_required_channel_on_update(
 
     response = await client_with_required_channel.patch(
         f"/api/ads/{create_response.json()['id']}",
-        json={"comment": "blocked"},
+        json={"amount": "75.00"},
         headers={"X-CSRF-Token": "invalid"},
     )
 
@@ -362,7 +465,7 @@ async def test_required_channel_denies_update(
 
     response = await client_with_required_channel.patch(
         f"/api/ads/{create_response.json()['id']}",
-        json={"comment": "blocked"},
+        json={"amount": "75.00"},
         headers={"X-CSRF-Token": csrf_token},
     )
 
@@ -636,17 +739,16 @@ async def test_required_channel_denies_mutating_ads_endpoint(
 
 @pytest.mark.parametrize("operation", ["create", "update", "revoke", "contact"])
 async def test_denied_required_channel_cache_persists_for_mutating_ads_endpoints(
-    tmp_path,
     test_settings,
     fake_telegram_client,
     authenticate,
     operation: Literal["create", "update", "revoke", "contact"],
 ) -> None:
     client, session_factory, engine = await make_file_backed_client(
-        tmp_path,
         test_settings,
         fake_telegram_client,
     )
+    test_settings.telegram_required_channels_enabled = True
     test_settings.telegram_required_channels = "@required"
 
     try:
@@ -669,14 +771,14 @@ async def test_denied_required_channel_cache_persists_for_mutating_ads_endpoints
             if operation == "create":
                 response = await client.post(
                     "/api/ads",
-                    json=ad_payload(base_currency="EUR", quote_currency="USD", rate="1.08"),
+                    json=ad_payload(base_currency="EUR", quote_currency="USD"),
                     headers={"X-CSRF-Token": denied_csrf},
                 )
             elif operation == "update":
                 assert ad_id is not None
                 response = await client.patch(
                     f"/api/ads/{ad_id}",
-                    json={"comment": "blocked"},
+                    json={"amount": "75.00"},
                     headers={"X-CSRF-Token": denied_csrf},
                 )
             elif operation == "revoke":
@@ -728,13 +830,14 @@ async def expire_required_channel_membership(test_session, *, telegram_id: int) 
     await test_session.commit()
 
 
-async def make_file_backed_client(tmp_path, test_settings, fake_telegram_client):
-    database_path = tmp_path / "ads-access.db"
-    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def make_file_backed_client(test_settings, fake_telegram_client):
+    engine = create_engine(get_test_database_url())
+    await reset_database(engine)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        await seed_reference_rates_in_session(session, test_settings)
+
     app = create_app()
 
     async def override_session():

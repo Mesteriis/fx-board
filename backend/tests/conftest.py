@@ -6,12 +6,13 @@ from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 import pytest
+from db_helpers import get_test_database_url, reset_database
 from httpx import ASGITransport, AsyncClient
+from rate_helpers import seed_reference_rates_in_session
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.db import models  # noqa: F401
-from app.db.base import Base
 from app.db.session import create_engine, get_session
 from app.main import create_app
 from app.telegram.client import ChatMemberResult, TelegramApiError
@@ -20,9 +21,8 @@ from app.telegram.notifications import NotificationIntent
 
 @pytest.fixture
 async def test_session():
-    engine = create_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    engine = create_engine(get_test_database_url())
+    await reset_database(engine)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with session_factory() as session:
@@ -36,7 +36,9 @@ class FakeTelegramClient:
         self.status_by_chat_id: dict[str, str] = {}
         self.raw_by_chat_id: dict[str, dict[str, object]] = {}
         self.calls: list[tuple[str, int]] = []
+        self.sent_messages: list[tuple[int, str]] = []
         self.fail = False
+        self.fail_send_message = False
 
     async def get_chat_member(self, *, chat_id: str, user_id: int) -> ChatMemberResult:
         self.calls.append((chat_id, user_id))
@@ -45,6 +47,11 @@ class FakeTelegramClient:
         status = self.status_by_chat_id.get(chat_id, "member")
         raw = {"status": status, **self.raw_by_chat_id.get(chat_id, {})}
         return ChatMemberResult(status=status, raw=raw)
+
+    async def send_message(self, *, chat_id: int, text: str) -> None:
+        if self.fail_send_message:
+            raise TelegramApiError("test telegram send failure")
+        self.sent_messages.append((chat_id, text))
 
 
 class FakeNotificationSink:
@@ -64,6 +71,7 @@ def test_settings() -> Settings:
         telegram_bot_username="test_bot",
         telegram_webhook_secret="test_webhook_secret",
         telegram_internal_bot_secret="test_internal_bot_secret_long_enough",
+        telegram_required_channels_enabled=False,
         telegram_required_channels="",
         admin_telegram_ids="123",
     )
@@ -77,6 +85,11 @@ def fake_telegram_client() -> FakeTelegramClient:
 @pytest.fixture
 def fake_notification_sink() -> FakeNotificationSink:
     return FakeNotificationSink()
+
+
+@pytest.fixture
+async def seeded_reference_rates(test_session, test_settings) -> None:
+    await seed_reference_rates_in_session(test_session, test_settings)
 
 
 @pytest.fixture
@@ -165,6 +178,7 @@ async def client_with_required_channel(
     from app.routers.auth import get_telegram_client
     from app.telegram.notifications import get_notification_sink
 
+    test_settings.telegram_required_channels_enabled = True
     test_settings.telegram_required_channels = "@required"
     app = create_app()
 

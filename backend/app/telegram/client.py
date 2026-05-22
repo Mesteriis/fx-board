@@ -42,3 +42,23 @@ class TelegramBotApiClient:
             raise TelegramApiError("telegram getChatMember returned malformed payload") from exc
 
         return ChatMemberResult(status=status, raw=result)
+
+    async def send_message(self, *, chat_id: int, text: str) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+                response = await client.post(
+                    f"{self._base_url}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": text,
+                        "disable_web_page_preview": True,
+                    },
+                )
+            if response.status_code >= 400:
+                raise TelegramApiError("telegram sendMessage http error")
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            raise TelegramApiError("telegram sendMessage request failed") from None
+
+        if not payload.get("ok"):
+            raise TelegramApiError("telegram sendMessage returned not ok")

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 import sys
@@ -5,6 +6,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from db_helpers import get_test_database_url, reset_database
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 
@@ -53,12 +55,21 @@ async def commit_expecting_integrity_error(test_session) -> None:
     await test_session.rollback()
 
 
-async def test_sqlite_pragmas_and_tables(test_session) -> None:
-    result = await test_session.execute(text("PRAGMA foreign_keys"))
-    assert result.scalar_one() == 1
+async def fetch_public_table_names() -> set[str]:
+    engine = create_engine(get_test_database_url())
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            )
+            return {row[0] for row in result.all()}
+    finally:
+        await engine.dispose()
 
+
+async def test_postgres_tables_and_indexes(test_session) -> None:
     result = await test_session.execute(
-        text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        text("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")
     )
     tables = {row[0] for row in result.all()}
 
@@ -75,11 +86,16 @@ async def test_sqlite_pragmas_and_tables(test_session) -> None:
         "users",
     }.issubset(tables)
 
-    result = await test_session.execute(text("PRAGMA index_list('users')"))
-    user_indexes = {row[1]: bool(row[2]) for row in result.all()}
+    result = await test_session.execute(
+        text(
+            "SELECT indexname, indexdef FROM pg_indexes "
+            "WHERE schemaname = current_schema() AND tablename = 'users'"
+        )
+    )
+    user_indexes = {row[0]: row[1] for row in result.all()}
 
     assert "idx_users_username" in user_indexes
-    assert user_indexes["idx_users_telegram_id"] is True
+    assert "UNIQUE" in user_indexes["idx_users_telegram_id"]
 
 
 async def test_utc_datetimes_round_trip_as_aware_utc(test_session) -> None:
@@ -172,6 +188,18 @@ async def test_unique_telegram_id_index_rejects_duplicates(test_session) -> None
     await commit_expecting_integrity_error(test_session)
 
 
+async def test_telegram_id_accepts_bigint_values(test_session) -> None:
+    large_telegram_id = 9_000_000_001
+    test_session.add(make_user(telegram_id=large_telegram_id, username="large_id"))
+    await test_session.commit()
+
+    user = (
+        await test_session.execute(select(User).where(User.telegram_id == large_telegram_id))
+    ).scalar_one()
+
+    assert user.telegram_id == large_telegram_id
+
+
 async def test_report_partial_unique_index_allows_null_ad_id_only(test_session) -> None:
     reporter = make_user(telegram_id=1004, username="reporter")
     target = make_user(telegram_id=1005, username="target")
@@ -236,11 +264,16 @@ async def test_report_partial_unique_index_allows_null_ad_id_only(test_session) 
     assert len(result.scalars().all()) == 2
 
 
-def test_alembic_upgrade_and_downgrade_file_db(tmp_path) -> None:
-    database_path = tmp_path / "schema.db"
+def test_alembic_upgrade_and_downgrade_postgres_db() -> None:
+    engine = create_engine(get_test_database_url())
+    try:
+        asyncio.run(reset_database(engine, create_tables=False))
+    finally:
+        asyncio.run(engine.dispose())
+
     env = {
         **os.environ,
-        "DATABASE_URL": f"sqlite+aiosqlite:///{database_path}",
+        "DATABASE_URL": get_test_database_url(),
     }
 
     subprocess.run(
@@ -249,28 +282,36 @@ def test_alembic_upgrade_and_downgrade_file_db(tmp_path) -> None:
         cwd=os.getcwd(),
         env=env,
     )
+    assert "rates" in asyncio.run(fetch_public_table_names())
+
     subprocess.run(
         [sys.executable, "-m", "alembic", "downgrade", "base"],
         check=True,
         cwd=os.getcwd(),
         env=env,
     )
+    assert "rates" not in asyncio.run(fetch_public_table_names())
 
 
 def test_explicit_database_url_wins(monkeypatch) -> None:
-    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///env.db")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://env:env@localhost/env")
 
-    engine = create_engine("sqlite+aiosqlite:///explicit.db")
+    engine = create_engine("postgresql+asyncpg://explicit:explicit@localhost/explicit")
 
-    assert str(engine.url) == "sqlite+aiosqlite:///explicit.db"
+    assert str(engine.url) == "postgresql+asyncpg://explicit:***@localhost/explicit"
 
 
 def test_exported_database_url_wins_over_env_file(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///exported.db")
-    (tmp_path / ".env").write_text('DATABASE_URL="sqlite+aiosqlite:///dotenv.db"\n')
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://exported:exported@localhost/exported",
+    )
+    (tmp_path / ".env").write_text(
+        'DATABASE_URL="postgresql+asyncpg://dotenv:dotenv@localhost/dotenv"\n'
+    )
 
-    assert get_database_url() == "sqlite+aiosqlite:///exported.db"
+    assert get_database_url() == "postgresql+asyncpg://exported:exported@localhost/exported"
 
 
 def test_database_url_reads_env_file_when_process_env_absent(tmp_path, monkeypatch) -> None:
@@ -279,22 +320,15 @@ def test_database_url_reads_env_file_when_process_env_absent(tmp_path, monkeypat
     (tmp_path / ".env").write_text(
         "# unrelated settings must not be parsed\n"
         "SESSION_SECRET=too-short\n"
-        "DATABASE_URL='sqlite+aiosqlite:///dotenv.db'\n"
+        "DATABASE_URL='postgresql+asyncpg://dotenv:dotenv@localhost/dotenv'\n"
     )
 
-    assert get_database_url() == "sqlite+aiosqlite:///dotenv.db"
+    assert get_database_url() == "postgresql+asyncpg://dotenv:dotenv@localhost/dotenv"
 
 
-async def test_default_sqlite_parent_directory_is_created(tmp_path, monkeypatch) -> None:
+def test_default_database_url_is_postgres(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    engine = create_engine(DEFAULT_DATABASE_URL)
-    try:
-        async with engine.connect() as connection:
-            result = await connection.execute(text("SELECT 1"))
-            assert result.scalar_one() == 1
-    finally:
-        await engine.dispose()
-
-    assert (tmp_path / "data").is_dir()
+    assert DEFAULT_DATABASE_URL.startswith("postgresql+asyncpg://")
+    assert get_database_url() == DEFAULT_DATABASE_URL

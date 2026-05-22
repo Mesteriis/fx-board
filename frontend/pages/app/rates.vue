@@ -20,9 +20,13 @@ watch(auth, async (value) => {
 <template>
   <TelegramAuthGate>
     <AppShell>
-      <section class="content-section">
+      <div v-if="rates" class="rates-freshness-line">
+        Курсы актуальны на {{ rates.date }}
+      </div>
+      <div class="rates-page-grid">
+        <RatesConverter :rates="rates" :loading="loading" />
         <RatesWidget :rates="rates" :loading="loading" />
-      </section>
+      </div>
     </AppShell>
   </TelegramAuthGate>
 </template>

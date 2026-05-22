@@ -23,7 +23,7 @@ def upgrade() -> None:
         "contact_attempts",
         ["initiator_user_id"],
         unique=True,
-        sqlite_where=sa.text("status = 'OPENED'"),
+        postgresql_where=sa.text("status = 'OPENED'"),
     )
 
 

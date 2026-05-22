@@ -2,6 +2,7 @@
 import type { AuthResponse } from '~/types/api'
 
 const auth = useState<AuthResponse | null>('auth', () => null)
+const { closeWebApp, isTelegramWebApp } = useTelegram()
 
 const navItems = [
   { to: '/app', label: 'Доска' },
@@ -13,8 +14,19 @@ const navItems = [
 </script>
 
 <template>
-  <div class="app-shell">
-    <header class="app-header">
+  <div :class="['app-shell', { 'app-shell--telegram': isTelegramWebApp }]">
+    <button
+      v-if="isTelegramWebApp"
+      type="button"
+      class="telegram-close-button"
+      aria-label="Закрыть приложение"
+      title="Закрыть"
+      @click="closeWebApp"
+    >
+      ×
+    </button>
+
+    <header v-if="!isTelegramWebApp" class="app-header">
       <NuxtLink to="/app" class="brand-link" aria-label="FX Board">
         <span class="brand-mark">FX</span>
         <span class="brand-text">Board</span>

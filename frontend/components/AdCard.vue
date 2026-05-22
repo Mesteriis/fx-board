@@ -16,29 +16,38 @@ const emit = defineEmits<{
 }>()
 
 const { apiFetch } = useApi()
-const { openTelegramLink } = useTelegram()
 const contactError = ref<string | null>(null)
+const contactNotice = ref<string | null>(null)
 const busy = ref(false)
 
-const sideLabel = computed(() => (props.ad.side === 'SELL' ? 'Продажа' : 'Покупка'))
-const authorLabel = computed(() => {
-  if (props.ad.author?.username) return `@${props.ad.author.username}`
-  return 'Автор через Telegram'
+const paymentMethodLabel = computed(() => {
+  if (!props.ad.payment_method) return 'Не указан'
+  return props.ad.payment_method
+    .split(',')
+    .map((method) => paymentMethodText(method))
+    .join(', ')
+})
+const quotePrice = computed(() => {
+  const amount = Number(props.ad.amount)
+  const rate = Number(props.ad.rate)
+  if (!Number.isFinite(amount) || !Number.isFinite(rate)) return null
+  return amount * rate
 })
 
 async function contactAuthor() {
   contactError.value = null
+  contactNotice.value = null
   busy.value = true
   try {
     const response = await apiFetch<ContactAttemptResponse>(`/ads/${props.ad.id}/contact`, {
       method: 'POST'
     })
-    openTelegramLink(response.telegram_url)
+    contactNotice.value = response.message
   } catch (errorValue) {
     if (isStatus(errorValue, 403)) {
       contactError.value = 'Контакт недоступен'
     } else {
-      contactError.value = 'Не удалось открыть контакт'
+      contactError.value = 'Не удалось отправить сообщение'
     }
   } finally {
     busy.value = false
@@ -66,59 +75,70 @@ function isStatus(errorValue: unknown, statusCode: number) {
   )
 }
 
-function money(value: string | null) {
+function money(value: string | number | null) {
   if (!value) return null
   return Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 8 })
+}
+
+function paymentMethodText(method: string) {
+  const normalized = method.trim().toUpperCase()
+  if (normalized === 'CASH') return 'Наличные'
+  if (normalized === 'TRANSFER') return 'Перевод'
+  if (normalized === 'CRYPTO') return 'Крипта'
+  return method
 }
 </script>
 
 <template>
   <article class="ad-card">
-    <div class="ad-card__top">
-      <span :class="['side-pill', ad.side === 'SELL' ? 'side-pill--sell' : 'side-pill--buy']">
-        {{ sideLabel }}
-      </span>
-      <NuxtLink :to="`/app/ad/${ad.id}`" class="ad-id">#{{ ad.id }}</NuxtLink>
+    <div class="ad-offer-line">
+      {{ money(ad.amount) }} {{ ad.base_currency }} -&gt; {{ ad.quote_currency }}
     </div>
 
-    <div class="ad-pair">{{ ad.base_currency }}/{{ ad.quote_currency }}</div>
-    <div class="ad-amount">{{ money(ad.amount) }} {{ ad.base_currency }}</div>
+    <details class="ad-details">
+      <summary>Цена и условия</summary>
+      <dl class="ad-meta">
+        <div v-if="quotePrice !== null">
+          <dt>Цена</dt>
+          <dd>{{ money(quotePrice) }} {{ ad.quote_currency }}</dd>
+        </div>
+        <div>
+          <dt>Расчет</dt>
+          <dd>{{ paymentMethodLabel }}</dd>
+        </div>
+        <div v-if="ad.location">
+          <dt>Место встречи</dt>
+          <dd>{{ ad.location }}</dd>
+        </div>
+      </dl>
+    </details>
 
-    <dl class="ad-meta">
-      <div>
-        <dt>Курс</dt>
-        <dd>{{ money(ad.rate) }}</dd>
-      </div>
-      <div v-if="ad.min_amount || ad.max_amount">
-        <dt>Лимиты</dt>
-        <dd>{{ money(ad.min_amount) || '0' }} - {{ money(ad.max_amount) || money(ad.amount) }}</dd>
-      </div>
-      <div v-if="ad.payment_method">
-        <dt>Расчет</dt>
-        <dd>{{ ad.payment_method }}</dd>
-      </div>
-      <div v-if="ad.location">
-        <dt>Локация</dt>
-        <dd>{{ ad.location }}</dd>
-      </div>
-      <div>
-        <dt>Автор</dt>
-        <dd>{{ authorLabel }}</dd>
-      </div>
-    </dl>
-
-    <p v-if="ad.comment" class="ad-comment">{{ ad.comment }}</p>
     <p v-if="contactError" class="danger-text">{{ contactError }}</p>
+    <p v-if="contactNotice" class="success-text">{{ contactNotice }}</p>
 
     <div class="ad-actions">
-      <button type="button" class="primary-button" :disabled="busy" @click="contactAuthor">
-        Написать
+      <button
+        type="button"
+        class="ad-action-button ad-action-button--contact"
+        :disabled="busy"
+        aria-label="Отправить контакт продавцу"
+        title="Отправить контакт продавцу"
+        @click="contactAuthor"
+      >
+        <span aria-hidden="true" class="ad-action-icon">✉</span>
       </button>
-      <NuxtLink class="ghost-button" :to="`/app/report/${ad.id}`">Пожаловаться</NuxtLink>
+      <NuxtLink
+        class="ad-action-button ad-action-button--report"
+        :to="`/app/report/${ad.id}`"
+        aria-label="Пожаловаться"
+        title="Пожаловаться"
+      >
+        <span aria-hidden="true" class="ad-action-icon">!</span>
+      </NuxtLink>
       <button
         v-if="showRevoke && ad.status === 'ACTIVE'"
         type="button"
-        class="danger-button"
+        class="ad-action-button ad-action-button--revoke"
         :disabled="busy"
         @click="revokeAd"
       >

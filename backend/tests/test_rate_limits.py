@@ -9,14 +9,16 @@ from app.core.limits import check_rate_limit
 from app.core.time import utc_now
 from app.db.models import Ad, RateLimitEvent, User, UserChannelMembership
 
+pytestmark = pytest.mark.usefixtures("seeded_reference_rates")
+
 
 def ad_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "side": "SELL",
         "base_currency": "USD",
         "quote_currency": "RUB",
         "amount": "100.00",
-        "rate": "92.50",
+        "payment_method": "CASH",
+        "location": "Madrid",
     }
     payload.update(overrides)
     return payload
@@ -224,14 +226,14 @@ async def test_update_ad_rate_limit_is_enforced_by_user(client, authenticate) ->
     for index in range(30):
         response = await client.patch(
             f"/api/ads/{ad_id}",
-            json={"comment": f"update {index}"},
+            json={"amount": str(100 + index)},
             headers={"X-CSRF-Token": csrf_token},
         )
         assert response.status_code == 200
 
     response = await client.patch(
         f"/api/ads/{ad_id}",
-        json={"comment": "blocked"},
+        json={"amount": "1000.00"},
         headers={"X-CSRF-Token": csrf_token},
     )
 

@@ -1,13 +1,14 @@
-import csv
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from io import StringIO
-from zoneinfo import ZoneInfo
+from xml.etree import ElementTree
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -23,11 +24,36 @@ from app.telegram.notifications import (
 
 logger = logging.getLogger(__name__)
 
-RATE_RESPONSE_SOURCE = "googlefinance"
+RATE_RESPONSE_SOURCE = "cbr"
+CBR_SOURCE = "cbr"
+BINANCE_SOURCE = "binance"
+DERIVED_SOURCE = "derived"
 FOUR_DECIMALS = Decimal("0.0001")
-EXPECTED_COLUMNS = {"pair", "rate", "source", "updated_at"}
+EIGHT_DECIMALS = Decimal("0.00000001")
+REQUIRED_CBR_CODES = {"USD", "EUR"}
+USD_PEGGED_CURRENCIES = {"USD", "USDT", "USDC"}
+EXPECTED_BINANCE_AR_USDT_SYMBOL = "ARUSDT"
+REQUIRED_RESPONSE_RATE_PAIRS = frozenset(
+    {
+        "AR/EUR",
+        "AR/RUB",
+        "AR/USDC",
+        "AR/USDT",
+        "AR/USD",
+        "EUR/RUB",
+        "EUR/USD",
+        "USDC/EUR",
+        "USDC/RUB",
+        "USDC/USD",
+        "USDT/EUR",
+        "USDT/RUB",
+        "USDT/USD",
+        "USD/EUR",
+        "USD/RUB",
+    }
+)
 
-RateCsvFetcher = Callable[[str], Awaitable[str]]
+RemoteRatesFetcher = Callable[[str], Awaitable[str]]
 
 
 class RatesUnavailableError(AppError):
@@ -36,41 +62,91 @@ class RatesUnavailableError(AppError):
 
 
 @dataclass(frozen=True, slots=True)
-class ParsedRate:
-    pair: str
-    rate: Decimal
-    source: str
-    updated_at: str
-
-    @property
-    def normalized_rate(self) -> str:
-        return _format_rate(self.rate)
+class ParsedCbrRates:
+    source_date: str
+    base_rates: dict[str, Decimal]
 
 
-def parse_rates_csv(csv_text: str) -> dict[str, str]:
+def parse_cbr_rates_xml(xml_text: str) -> ParsedCbrRates:
+    try:
+        root = ElementTree.fromstring(xml_text)
+    except ElementTree.ParseError as exc:
+        raise ValueError("invalid CBR XML") from exc
+
+    raw_source_date = root.attrib.get("Date")
+    if not raw_source_date:
+        raise ValueError("invalid CBR XML: missing Date")
+    try:
+        source_date = datetime.strptime(raw_source_date, "%d.%m.%Y").date().isoformat()
+    except ValueError as exc:
+        raise ValueError("invalid CBR XML: invalid Date") from exc
+
+    base_rates: dict[str, Decimal] = {}
+    for valute in root.findall("Valute"):
+        char_code = (valute.findtext("CharCode") or "").strip().upper()
+        if char_code not in REQUIRED_CBR_CODES:
+            continue
+        base_rates[f"{char_code}/RUB"] = _parse_cbr_unit_rate(valute)
+
+    missing_codes = sorted(
+        code for code in REQUIRED_CBR_CODES if f"{code}/RUB" not in base_rates
+    )
+    if missing_codes:
+        raise ValueError(f"missing required CBR rate: {', '.join(missing_codes)}")
+
+    return ParsedCbrRates(source_date=source_date, base_rates=base_rates)
+
+
+def derive_reference_rates(base_rates: Mapping[str, Decimal]) -> dict[str, Decimal]:
+    usd_rub = _require_rate(base_rates, "USD/RUB")
+    eur_rub = _require_rate(base_rates, "EUR/RUB")
+    ar_usd = _require_rate(base_rates, "AR/USD")
+
+    usd_eur = _quantize_eight(usd_rub / eur_rub)
+    eur_usd = _quantize_eight(eur_rub / usd_rub)
+    ar_usd = _quantize_eight(ar_usd)
+
     return {
-        pair: parsed_rate.normalized_rate
-        for pair, parsed_rate in _parse_rates_csv_rows(csv_text).items()
+        "AR/EUR": _quantize_eight(ar_usd * usd_eur),
+        "AR/RUB": _quantize_four(ar_usd * usd_rub),
+        "AR/USDC": ar_usd,
+        "AR/USDT": ar_usd,
+        "AR/USD": ar_usd,
+        "EUR/RUB": _quantize_four(eur_rub),
+        "EUR/USD": eur_usd,
+        "USDC/EUR": usd_eur,
+        "USDC/RUB": _quantize_four(usd_rub),
+        "USDC/USD": Decimal("1.0000"),
+        "USDT/EUR": usd_eur,
+        "USDT/RUB": _quantize_four(usd_rub),
+        "USDT/USD": Decimal("1.0000"),
+        "USD/EUR": usd_eur,
+        "USD/RUB": _quantize_four(usd_rub),
     }
 
 
-def derive_stablecoin_rates(base_rates: Mapping[str, str]) -> dict[str, str]:
-    derived = {
-        "USDT/USD": "1.0000",
-        "USDC/USD": "1.0000",
-    }
-    if "USD/RUB" in base_rates:
-        derived["USDT/RUB"] = base_rates["USD/RUB"]
-        derived["USDC/RUB"] = base_rates["USD/RUB"]
-    if "USD/EUR" in base_rates:
-        derived["USDT/EUR"] = base_rates["USD/EUR"]
-        derived["USDC/EUR"] = base_rates["USD/EUR"]
-    return derived
+def parse_binance_symbol_price_json(json_text: str) -> Decimal:
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid Binance ticker JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("invalid Binance ticker JSON")
+
+    symbol = str(payload.get("symbol", "")).upper()
+    if symbol != EXPECTED_BINANCE_AR_USDT_SYMBOL:
+        raise ValueError("unexpected Binance symbol")
+
+    raw_price = payload.get("price")
+    if raw_price is None:
+        raise ValueError("invalid Binance ticker JSON: missing price")
+    return _parse_positive_decimal(str(raw_price))
 
 
-async def fetch_rates_csv(url: str) -> str:
+async def fetch_rates_remote(url: str) -> str:
     if not url.strip():
-        raise ValueError("google rates csv url is not configured")
+        raise ValueError("rates source url is not configured")
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(url)
@@ -82,34 +158,59 @@ async def get_rates(
     db: AsyncSession,
     *,
     settings: Settings,
-    fetch_csv: RateCsvFetcher | None = None,
+    fetch_remote: RemoteRatesFetcher | None = None,
     notification_sink: NotificationSink | None = None,
 ) -> RatesResponse:
-    today = utc_now().astimezone(ZoneInfo(settings.rates_refresh_timezone)).date()
+    today = utc_now().astimezone(_rates_timezone(settings)).date()
     today_rows = await _rates_for_date(db, today)
-    if today_rows:
+    if _rates_cache_complete(today_rows):
         return _rates_response(today_rows, rate_date=today, is_stale=False)
 
-    fetcher = fetch_csv or fetch_rates_csv
+    fetcher = fetch_remote or fetch_rates_remote
     try:
-        csv_text = await fetcher(settings.google_rates_csv_url)
-        parsed_rows = _parse_rates_csv_rows(csv_text)
-        parsed_rates = {pair: row.normalized_rate for pair, row in parsed_rows.items()}
-        all_rates = {**parsed_rates, **derive_stablecoin_rates(parsed_rates)}
+        if settings.rates_provider != "cbr":
+            raise ValueError(f"unsupported rates provider: {settings.rates_provider}")
+        xml_text = await fetcher(settings.cbr_rates_xml_url)
+        ar_usdt_json_text = await fetcher(settings.binance_ar_usdt_ticker_url)
+        parsed = parse_cbr_rates_xml(xml_text)
+        all_rates = derive_reference_rates(
+            {
+                **parsed.base_rates,
+                "AR/USD": parse_binance_symbol_price_json(ar_usdt_json_text),
+            }
+        )
         now = utc_now()
-        for pair, rate in sorted(all_rates.items()):
-            source = parsed_rows[pair].source if pair in parsed_rows else "derived_stablecoin"
-            db.add(
-                Rate(
-                    pair=pair,
-                    rate=Decimal(rate),
-                    source=source,
-                    rate_date=today,
-                    fetched_at=now,
-                    raw_payload=csv_text,
-                )
+        raw_payload = json.dumps(
+            {
+                "cbr_xml": xml_text,
+                "binance_ar_usdt": ar_usdt_json_text,
+            },
+            ensure_ascii=False,
+        )
+        insert_statement = postgresql_insert(Rate).values(
+            [
+                {
+                    "pair": pair,
+                    "rate": rate,
+                    "source": _source_for_pair(pair, parsed.base_rates),
+                    "rate_date": today,
+                    "fetched_at": now,
+                    "raw_payload": raw_payload,
+                }
+                for pair, rate in sorted(all_rates.items())
+            ]
+        )
+        await db.execute(
+            insert_statement.on_conflict_do_update(
+                index_elements=["pair", "rate_date"],
+                set_={
+                    "rate": insert_statement.excluded.rate,
+                    "source": insert_statement.excluded.source,
+                    "fetched_at": insert_statement.excluded.fetched_at,
+                    "raw_payload": insert_statement.excluded.raw_payload,
+                },
             )
-        await db.flush()
+        )
         return _rates_response(await _rates_for_date(db, today), rate_date=today, is_stale=False)
     except (httpx.HTTPError, ValueError) as exc:
         return await _stale_rates_response(
@@ -119,39 +220,78 @@ async def get_rates(
         )
 
 
-def _parse_rates_csv_rows(csv_text: str) -> dict[str, ParsedRate]:
-    reader = csv.DictReader(StringIO(csv_text))
-    if reader.fieldnames is None or EXPECTED_COLUMNS - set(reader.fieldnames):
-        raise ValueError("rates csv has invalid columns")
+async def get_pair_rate(
+    db: AsyncSession,
+    *,
+    settings: Settings,
+    base_currency: str,
+    quote_currency: str,
+    fetch_remote: RemoteRatesFetcher | None = None,
+    notification_sink: NotificationSink | None = None,
+) -> Decimal:
+    response = await get_rates(
+        db,
+        settings=settings,
+        fetch_remote=fetch_remote,
+        notification_sink=notification_sink,
+    )
+    rates = {item.pair: Decimal(item.rate) for item in response.rates}
+    return resolve_pair_rate(
+        rates,
+        base_currency=base_currency,
+        quote_currency=quote_currency,
+    )
 
-    rates: dict[str, ParsedRate] = {}
-    for row in reader:
-        pair = (row.get("pair") or "").strip().upper()
-        if not pair:
-            raise ValueError("rates csv has empty pair")
-        if pair in rates:
-            raise ValueError(f"duplicate rate for {pair}")
 
-        raw_rate = (row.get("rate") or "").strip()
-        try:
-            rate = _parse_positive_rate(raw_rate)
-        except ValueError as exc:
-            raise ValueError(f"invalid rate for {pair}") from exc
+def resolve_pair_rate(
+    rates: Mapping[str, Decimal],
+    *,
+    base_currency: str,
+    quote_currency: str,
+) -> Decimal:
+    if base_currency == quote_currency:
+        raise RatesUnavailableError("rate for pair unavailable")
 
-        source = (row.get("source") or "").strip()
-        if not source:
-            raise ValueError(f"missing source for {pair}")
-        updated_at = (row.get("updated_at") or "").strip()
-        if not updated_at:
-            raise ValueError(f"missing updated_at for {pair}")
+    direct_pair = f"{base_currency}/{quote_currency}"
+    if direct_pair in rates:
+        return _quantize_eight(rates[direct_pair])
 
-        rates[pair] = ParsedRate(
-            pair=pair,
-            rate=rate,
-            source=source,
-            updated_at=updated_at,
-        )
-    return rates
+    base_usd = _currency_to_usd(rates, base_currency)
+    quote_usd = _currency_to_usd(rates, quote_currency)
+    if base_usd is not None and quote_usd is not None:
+        return _quantize_eight(base_usd / quote_usd)
+
+    reverse_pair = f"{quote_currency}/{base_currency}"
+    if reverse_pair in rates:
+        return _quantize_eight(Decimal("1") / rates[reverse_pair])
+
+    raise RatesUnavailableError("rate for pair unavailable")
+
+
+def _parse_cbr_unit_rate(valute: ElementTree.Element) -> Decimal:
+    unit_rate = (valute.findtext("VunitRate") or "").strip()
+    if unit_rate:
+        return _parse_positive_decimal(unit_rate.replace(",", "."))
+
+    raw_value = (valute.findtext("Value") or "").strip()
+    raw_nominal = (valute.findtext("Nominal") or "").strip()
+    if not raw_value or not raw_nominal:
+        raise ValueError("invalid CBR XML: missing rate value")
+    value = _parse_positive_decimal(raw_value.replace(",", "."))
+    nominal = _parse_positive_decimal(raw_nominal.replace(",", "."))
+    return _quantize_eight(value / nominal)
+
+
+def _currency_to_usd(rates: Mapping[str, Decimal], currency: str) -> Decimal | None:
+    if currency in USD_PEGGED_CURRENCIES:
+        return Decimal("1")
+    direct_pair = f"{currency}/USD"
+    if direct_pair in rates:
+        return rates[direct_pair]
+    reverse_pair = f"USD/{currency}"
+    if reverse_pair in rates:
+        return _quantize_eight(Decimal("1") / rates[reverse_pair])
+    return None
 
 
 async def _stale_rates_response(
@@ -196,6 +336,18 @@ async def _rates_for_date(db: AsyncSession, rate_date) -> list[Rate]:
     return list(result)
 
 
+def _rates_cache_complete(rows: list[Rate]) -> bool:
+    return REQUIRED_RESPONSE_RATE_PAIRS.issubset({row.pair for row in rows})
+
+
+def _source_for_pair(pair: str, cbr_pairs: Mapping[str, Decimal]) -> str:
+    if pair in cbr_pairs:
+        return CBR_SOURCE
+    if pair == "AR/USD":
+        return BINANCE_SOURCE
+    return DERIVED_SOURCE
+
+
 def _rates_response(rows: list[Rate], *, rate_date, is_stale: bool) -> RatesResponse:
     updated_at = max(row.fetched_at for row in rows)
     return RatesResponse(
@@ -207,6 +359,19 @@ def _rates_response(rows: list[Rate], *, rate_date, is_stale: bool) -> RatesResp
     )
 
 
+def _rates_timezone(settings: Settings):
+    from zoneinfo import ZoneInfo
+
+    return ZoneInfo(settings.rates_refresh_timezone)
+
+
+def _require_rate(rates: Mapping[str, Decimal], pair: str) -> Decimal:
+    rate = rates.get(pair)
+    if rate is None:
+        raise ValueError(f"missing required rate: {pair}")
+    return rate
+
+
 def _format_rate(rate: Decimal) -> str:
     try:
         return f"{rate.quantize(FOUR_DECIMALS):.4f}"
@@ -214,17 +379,27 @@ def _format_rate(rate: Decimal) -> str:
         raise ValueError("invalid rate precision") from exc
 
 
-def _parse_positive_rate(raw_rate: str) -> Decimal:
+def _quantize_four(rate: Decimal) -> Decimal:
     try:
-        rate = Decimal(raw_rate)
+        return rate.quantize(FOUR_DECIMALS)
+    except InvalidOperation as exc:
+        raise ValueError("invalid rate precision") from exc
+
+
+def _quantize_eight(rate: Decimal) -> Decimal:
+    try:
+        return rate.quantize(EIGHT_DECIMALS)
+    except InvalidOperation as exc:
+        raise ValueError("invalid rate precision") from exc
+
+
+def _parse_positive_decimal(raw_value: str) -> Decimal:
+    try:
+        value = Decimal(raw_value)
     except InvalidOperation as exc:
         raise ValueError("invalid decimal") from exc
-    if not rate.is_finite():
+    if not value.is_finite():
         raise ValueError("rate must be finite")
-    if rate <= 0:
+    if value <= 0:
         raise ValueError("rate must be positive")
-    try:
-        rate.quantize(FOUR_DECIMALS)
-    except InvalidOperation as exc:
-        raise ValueError("invalid decimal precision") from exc
-    return rate
+    return value

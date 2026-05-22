@@ -2,8 +2,6 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from sqlalchemy import event
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -13,7 +11,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.db.base import Base
 
-DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./data/app.db"
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://fx_board:fx_board@localhost:15432/fx_board"
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -47,45 +45,9 @@ def _strip_env_value(value: str) -> str:
     return stripped
 
 
-def ensure_sqlite_parent_directory(database_url: str) -> None:
-    url = make_url(database_url)
-    if not url.drivername.startswith("sqlite"):
-        return
-
-    database = url.database
-    if not database or database == ":memory:" or url.query.get("mode") == "memory":
-        return
-    if database.startswith("file:") and url.query.get("mode") == "memory":
-        return
-
-    parent = Path(database).expanduser().parent
-    if str(parent) != ".":
-        parent.mkdir(parents=True, exist_ok=True)
-
-
 def create_engine(database_url: str | None = None) -> AsyncEngine:
     resolved_url = database_url or get_database_url()
-    ensure_sqlite_parent_directory(resolved_url)
-    engine = create_async_engine(resolved_url, future=True)
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        if _supports_wal(resolved_url):
-            cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.close()
-
-    return engine
-
-
-def _supports_wal(database_url: str) -> bool:
-    return (
-        database_url.startswith("sqlite")
-        and ":memory:" not in database_url
-        and "mode=memory" not in database_url
-    )
+    return create_async_engine(resolved_url, future=True)
 
 
 def get_engine() -> AsyncEngine:

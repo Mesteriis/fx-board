@@ -7,14 +7,16 @@ from sqlalchemy.exc import IntegrityError
 from app.core.time import utc_now
 from app.db.models import Ad, ContactAttempt, User, UserChannelMembership
 
+pytestmark = pytest.mark.usefixtures("seeded_reference_rates")
+
 
 def ad_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "side": "SELL",
         "base_currency": "USD",
         "quote_currency": "RUB",
         "amount": "100.00",
-        "rate": "92.50",
+        "payment_method": "CASH",
+        "location": "Madrid",
     }
     payload.update(overrides)
     return payload
@@ -51,30 +53,27 @@ async def test_contact_rejects_self_contact(client, authenticate) -> None:
     assert response.json()["message"] == "cannot contact your own ad"
 
 
-async def test_contact_rejects_unavailable_author_username(
+async def test_contact_rejects_unavailable_buyer_username(
     client,
     authenticate,
-    test_session,
 ) -> None:
     author_csrf = await authenticate(client, telegram_id=5002, username="author")
     ad_id = await create_ad(client, author_csrf)
-    author = (await test_session.execute(select(User).where(User.telegram_id == 5002))).scalar_one()
-    author.username = None
-    await test_session.commit()
 
-    initiator_csrf = await authenticate(client, telegram_id=5003, username="initiator")
+    initiator_csrf = await authenticate(client, telegram_id=5003, username=None)
     response = await client.post(
         f"/api/ads/{ad_id}/contact",
         headers={"X-CSRF-Token": initiator_csrf},
     )
 
     assert response.status_code == 403
-    assert response.json()["message"] == "contact unavailable"
+    assert response.json()["message"] == "buyer contact unavailable"
 
 
-async def test_contact_creates_attempt_and_returns_telegram_url(
+async def test_contact_creates_attempt_and_notifies_author(
     client,
     authenticate,
+    fake_telegram_client,
     test_session,
     test_settings,
 ) -> None:
@@ -91,12 +90,71 @@ async def test_contact_creates_attempt_and_returns_telegram_url(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["telegram_url"] == "https://t.me/author_name"
+    assert set(body) == {"contact_attempt_id", "message"}
+    assert body["message"] == "Сообщение отправлено продавцу"
     attempt = await test_session.get(ContactAttempt, body["contact_attempt_id"])
     assert attempt is not None
     assert attempt.status == "OPENED"
     assert attempt.ad_id == ad_id
     assert attempt.followup_due_at >= before + timedelta(hours=3)
+    assert len(fake_telegram_client.sent_messages) == 1
+    chat_id, text = fake_telegram_client.sent_messages[0]
+    assert chat_id == 5004
+    assert "Покупатель заинтересовался вашим объявлением." in text
+    assert f"Заявка: #{body['contact_attempt_id']}" in text
+    assert "Объявление: 100 USD -> RUB" in text
+    assert "Нужно взять: 9250 RUB" in text
+    assert "Расчет: Наличные" in text
+    assert "Место встречи: Madrid" in text
+    assert (
+        "Внимание: не удалось проверить пользователя на принадлежность к одобренным "
+        "группам, будьте внимательны."
+    ) in text
+    assert "не используйте вымышленные объяснения" in text
+    assert "FX Board не проводит платежи" in text
+    assert "Контакт покупателя: @initiator" in text
+    assert "https://t.me/initiator" in text
+
+
+async def test_contact_author_notification_omits_group_warning_when_check_enabled(
+    client,
+    authenticate,
+    fake_telegram_client,
+    test_settings,
+) -> None:
+    test_settings.telegram_required_channels_enabled = True
+    author_csrf = await authenticate(client, telegram_id=5016, username="author")
+    ad_id = await create_ad(client, author_csrf)
+
+    initiator_csrf = await authenticate(client, telegram_id=5017, username="initiator")
+    response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+
+    assert response.status_code == 201
+    assert len(fake_telegram_client.sent_messages) == 1
+    assert "не удалось проверить пользователя" not in fake_telegram_client.sent_messages[0][1]
+
+
+async def test_contact_rejects_when_author_notification_fails(
+    client,
+    authenticate,
+    fake_telegram_client,
+) -> None:
+    author_csrf = await authenticate(client, telegram_id=5002, username="author")
+    ad_id = await create_ad(client, author_csrf)
+    fake_telegram_client.fail_send_message = True
+
+    initiator_csrf = await authenticate(client, telegram_id=5003, username="initiator")
+    response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["message"] == "seller notification unavailable"
+    assert fake_telegram_client.sent_messages == []
 
 
 async def test_contact_rejects_missing_and_invalid_csrf(client, authenticate) -> None:
@@ -250,7 +308,6 @@ async def test_claim_due_followups_ignores_canceled_attempts_and_marks_claimed(
     second_ad_id = await create_ad(
         client,
         second_author_csrf,
-        side="BUY",
         base_currency="EUR",
         quote_currency="USD",
         amount="250.00",
@@ -293,10 +350,10 @@ async def test_claim_due_followups_ignores_canceled_attempts_and_marks_claimed(
     assert item["initiator_telegram_id"] == 5203
     assert item["author_telegram_id"] == 5202
     assert item["ad_id"] == second_ad_id
-    assert item["side"] == "BUY"
+    assert item["side"] == "SELL"
     assert item["pair"] == "EUR/USD"
     assert item["amount"] == "250.00000000"
-    assert "BUY 250.00000000 EUR/USD" in item["summary"]
+    assert "SELL 250.00000000 EUR/USD" in item["summary"]
 
     attempts = (
         await test_session.execute(select(ContactAttempt).order_by(ContactAttempt.id))
@@ -499,7 +556,6 @@ async def test_due_answer_prompts_expire_when_user_does_not_reply(
     second_ad_id = await create_ad(
         client,
         second_author_csrf,
-        side="BUY",
         base_currency="EUR",
         quote_currency="USD",
     )

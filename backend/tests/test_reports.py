@@ -1,18 +1,21 @@
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
 from app.core.time import utc_now
 from app.db.models import Ad, AuditLog, Report, User, UserChannelMembership
 
+pytestmark = pytest.mark.usefixtures("seeded_reference_rates")
+
 
 def ad_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "side": "SELL",
         "base_currency": "USD",
         "quote_currency": "RUB",
         "amount": "100.00",
-        "rate": "92.50",
+        "payment_method": "CASH",
+        "location": "Madrid",
     }
     payload.update(overrides)
     return payload

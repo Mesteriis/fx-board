@@ -1,4 +1,22 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fx_board}
+      POSTGRES_USER: ${POSTGRES_USER:-fx_board}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fx_board}
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-fx_board_test}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fx_board} -d ${POSTGRES_DB:-fx_board}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build:
       context: ..
@@ -6,10 +24,13 @@ services:
     env_file:
       - path: ../.env
         required: false
-    volumes:
-      - ../data:/app/backend/data
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fx_board}:${POSTGRES_PASSWORD:-fx_board}@db:5432/${POSTGRES_DB:-fx_board}
     ports:
       - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
 
   web:
     build:
@@ -17,6 +38,7 @@ services:
       dockerfile: docker/frontend.Dockerfile
     environment:
       NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-/api}
+      NUXT_API_PROXY_TARGET: ${NUXT_API_PROXY_TARGET:-http://api:8000}
       NUXT_PUBLIC_BOT_USERNAME: ${NUXT_PUBLIC_BOT_USERNAME:-your_bot}
     ports:
       - "${WEB_PORT:-3000}:3000"
@@ -34,3 +56,6 @@ services:
       BACKEND_BASE_URL: http://api:8000
     depends_on:
       - api
+
+volumes:
+  postgres_data:

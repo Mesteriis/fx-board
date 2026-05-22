@@ -6,6 +6,7 @@ from typing import Protocol
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .callbacks import encode_deal_callback
+from .messages import COMPLIANCE_NOTICE
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ def build_initiator_prompt(item: FollowupItem) -> str:
     return (
         f"Удалось ли договориться по объявлению #{_required_int(item, 'ad_id')}?\n\n"
         f"{_required_str(item, 'summary')}\n\n"
+        f"{COMPLIANCE_NOTICE}\n\n"
         "Нажмите Да, если сделка состоялась."
     )
 
@@ -72,6 +74,7 @@ def build_author_prompt(item: FollowupItem) -> str:
         f"Пользователь сообщил, что сделка по объявлению #{_required_int(item, 'ad_id')} "
         "состоялась.\n\n"
         f"{_required_str(item, 'summary')}\n\n"
+        f"{COMPLIANCE_NOTICE}\n\n"
         "Подтвердите, что сделка действительно состоялась."
     )
 
