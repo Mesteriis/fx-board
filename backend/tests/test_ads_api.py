@@ -14,6 +14,7 @@ from app.db.models import Ad, User, UserChannelMembership
 from app.db.session import create_engine, get_session
 from app.main import create_app
 from app.routers.auth import get_telegram_client
+from app.services.ads import begin_sqlite_immediate
 
 
 def ad_payload(**overrides: object) -> dict[str, object]:
@@ -184,6 +185,35 @@ async def test_active_ad_limit_allows_exact_boundary_only(
     assert second_response.status_code == 201
     assert third_response.status_code == 400
     assert third_response.json()["message"] == "active ad limit reached"
+
+
+async def test_begin_sqlite_immediate_does_not_commit_caller_transaction(
+    test_session,
+) -> None:
+    now = utc_now()
+    user = User(
+        telegram_id=1201,
+        username="original",
+        is_admin=False,
+        is_banned=False,
+        first_seen_at=now,
+        last_seen_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    test_session.add(user)
+    await test_session.commit()
+
+    user.username = "pending"
+
+    with pytest.raises(RuntimeError):
+        await begin_sqlite_immediate(test_session)
+
+    await test_session.rollback()
+    persisted_user = (
+        await test_session.execute(select(User).where(User.telegram_id == 1201))
+    ).scalar_one()
+    assert persisted_user.username == "original"
 
 
 async def test_expired_ads_are_not_shown(client, authenticate, test_session) -> None:

@@ -206,7 +206,7 @@ async def begin_sqlite_immediate(db: AsyncSession) -> None:
     if bind.dialect.name != "sqlite":
         return
     if db.in_transaction():
-        await db.commit()
+        raise RuntimeError("BEGIN IMMEDIATE requires no active transaction")
     await db.execute(text("BEGIN IMMEDIATE"))
 
 
