@@ -78,9 +78,8 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("telegram_id"),
     )
-    op.create_index("idx_users_telegram_id", "users", ["telegram_id"], unique=False)
+    op.create_index("idx_users_telegram_id", "users", ["telegram_id"], unique=True)
     op.create_index("idx_users_username", "users", ["username"], unique=False)
 
     op.create_table(

@@ -24,6 +24,7 @@ async def test_sqlite_pragmas_and_tables(test_session) -> None:
     }.issubset(tables)
 
     result = await test_session.execute(text("PRAGMA index_list('users')"))
-    user_indexes = {row[1] for row in result.all()}
+    user_indexes = {row[1]: bool(row[2]) for row in result.all()}
 
     assert "idx_users_username" in user_indexes
+    assert user_indexes["idx_users_telegram_id"] is True

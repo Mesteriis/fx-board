@@ -22,12 +22,12 @@ from app.db.base import Base
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
-        Index("idx_users_telegram_id", "telegram_id"),
+        Index("idx_users_telegram_id", "telegram_id", unique=True),
         Index("idx_users_username", "username"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    telegram_id: Mapped[int] = mapped_column(Integer, nullable=False)
     username: Mapped[str | None] = mapped_column(String(64))
     first_name: Mapped[str | None] = mapped_column(String(128))
     last_name: Mapped[str | None] = mapped_column(String(128))
