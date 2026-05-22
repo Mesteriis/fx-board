@@ -1,7 +1,9 @@
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -18,11 +20,52 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_database_url() -> str:
-    return os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
+    return os.getenv("DATABASE_URL") or _read_dotenv_database_url() or DEFAULT_DATABASE_URL
+
+
+def _read_dotenv_database_url(dotenv_path: str = ".env") -> str | None:
+    path = Path(dotenv_path)
+    if not path.is_file():
+        return None
+
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() != "DATABASE_URL":
+            continue
+        return _strip_env_value(value)
+
+    return None
+
+
+def _strip_env_value(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def ensure_sqlite_parent_directory(database_url: str) -> None:
+    url = make_url(database_url)
+    if not url.drivername.startswith("sqlite"):
+        return
+
+    database = url.database
+    if not database or database == ":memory:" or url.query.get("mode") == "memory":
+        return
+    if database.startswith("file:") and url.query.get("mode") == "memory":
+        return
+
+    parent = Path(database).expanduser().parent
+    if str(parent) != ".":
+        parent.mkdir(parents=True, exist_ok=True)
 
 
 def create_engine(database_url: str | None = None) -> AsyncEngine:
     resolved_url = database_url or get_database_url()
+    ensure_sqlite_parent_directory(resolved_url)
     engine = create_async_engine(resolved_url, future=True)
 
     @event.listens_for(engine.sync_engine, "connect")

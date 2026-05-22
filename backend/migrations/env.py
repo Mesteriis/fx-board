@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.db import models  # noqa: F401
 from app.db.base import Base
-from app.db.session import DEFAULT_DATABASE_URL
+from app.db.session import DEFAULT_DATABASE_URL, ensure_sqlite_parent_directory, get_database_url
 
 config = context.config
 if config.config_file_name is not None:
@@ -16,10 +16,12 @@ if config.config_file_name is not None:
 
 database_url = (
     os.getenv("DATABASE_URL")
+    or get_database_url()
     or config.get_main_option("sqlalchemy.url")
     or DEFAULT_DATABASE_URL
 )
 config.set_main_option("sqlalchemy.url", database_url)
+ensure_sqlite_parent_directory(database_url)
 target_metadata = Base.metadata
 
 

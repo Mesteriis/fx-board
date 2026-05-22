@@ -1,14 +1,15 @@
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, StatementError
 
 from app.db.models import Ad, Report, Session, User
+from app.db.session import DEFAULT_DATABASE_URL, create_engine, get_database_url
 
 
 def utc_datetime(offset_seconds: int = 0) -> datetime:
@@ -82,7 +83,15 @@ async def test_sqlite_pragmas_and_tables(test_session) -> None:
 
 
 async def test_utc_datetimes_round_trip_as_aware_utc(test_session) -> None:
-    now = utc_datetime()
+    non_utc = datetime(
+        2026,
+        5,
+        22,
+        15,
+        30,
+        tzinfo=timezone(timedelta(hours=3)),
+    )
+    expected_utc = non_utc.astimezone(UTC)
     user = make_user(telegram_id=1001, username="timestamp_user")
     test_session.add(user)
     await test_session.flush()
@@ -90,9 +99,9 @@ async def test_utc_datetimes_round_trip_as_aware_utc(test_session) -> None:
         Session(
             id="session-token",
             user_id=user.id,
-            expires_at=now + timedelta(hours=1),
-            created_at=now,
-            last_used_at=now,
+            expires_at=non_utc,
+            created_at=non_utc,
+            last_used_at=non_utc,
         )
     )
     await test_session.commit()
@@ -103,6 +112,26 @@ async def test_utc_datetimes_round_trip_as_aware_utc(test_session) -> None:
     assert session is not None
     assert session.expires_at.tzinfo is not None
     assert session.expires_at.utcoffset() == timedelta(0)
+    assert session.expires_at == expected_utc
+
+
+async def test_utc_datetime_rejects_naive_datetimes(test_session) -> None:
+    user = make_user(telegram_id=1006, username="naive_datetime_user")
+    test_session.add(user)
+    await test_session.flush()
+    test_session.add(
+        Session(
+            id="naive-session",
+            user_id=user.id,
+            expires_at=datetime(2026, 5, 22, 12, 0),
+            created_at=utc_datetime(),
+            last_used_at=utc_datetime(),
+        )
+    )
+
+    with pytest.raises(StatementError):
+        await test_session.commit()
+    await test_session.rollback()
 
 
 async def test_foreign_key_enforcement_rejects_invalid_child(test_session) -> None:
@@ -226,3 +255,46 @@ def test_alembic_upgrade_and_downgrade_file_db(tmp_path) -> None:
         cwd=os.getcwd(),
         env=env,
     )
+
+
+def test_explicit_database_url_wins(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///env.db")
+
+    engine = create_engine("sqlite+aiosqlite:///explicit.db")
+
+    assert str(engine.url) == "sqlite+aiosqlite:///explicit.db"
+
+
+def test_exported_database_url_wins_over_env_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///exported.db")
+    (tmp_path / ".env").write_text('DATABASE_URL="sqlite+aiosqlite:///dotenv.db"\n')
+
+    assert get_database_url() == "sqlite+aiosqlite:///exported.db"
+
+
+def test_database_url_reads_env_file_when_process_env_absent(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    (tmp_path / ".env").write_text(
+        "# unrelated settings must not be parsed\n"
+        "SESSION_SECRET=too-short\n"
+        "DATABASE_URL='sqlite+aiosqlite:///dotenv.db'\n"
+    )
+
+    assert get_database_url() == "sqlite+aiosqlite:///dotenv.db"
+
+
+async def test_default_sqlite_parent_directory_is_created(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    engine = create_engine(DEFAULT_DATABASE_URL)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(text("SELECT 1"))
+            assert result.scalar_one() == 1
+    finally:
+        await engine.dispose()
+
+    assert (tmp_path / "data").is_dir()
