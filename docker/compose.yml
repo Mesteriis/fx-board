@@ -15,9 +15,11 @@ services:
     build:
       context: ..
       dockerfile: docker/frontend.Dockerfile
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       NUXT_PUBLIC_API_BASE: /api
-      NUXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-your_bot}
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:
