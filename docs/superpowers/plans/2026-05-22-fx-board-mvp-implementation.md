@@ -133,6 +133,7 @@ ContactAttemptStatus: OPENED, CANCELED_BY_NEW_CONTACT, ASKED_INITIATOR, INITIATO
 - Create: `bot/fx_board_bot/app.py`
 - Create: `bot/tests/test_config.py`
 - Create: `frontend/package.json`
+- Create: `frontend/package-lock.json`
 - Create: `frontend/nuxt.config.ts`
 - Create: `frontend/app.vue`
 - Create: `frontend/assets/css/main.css`
@@ -417,7 +418,7 @@ Create `frontend/package.json`:
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@nuxt/test-utils": "^3.14.0",
+    "@nuxt/test-utils": "3.14.0",
     "nuxt": "^3.13.0",
     "vue": "^3.5.0"
   },
@@ -511,6 +512,8 @@ npm run build
 ```
 
 Expected: Vitest passes and Nuxt build completes.
+
+Keep the generated `frontend/package-lock.json`. `@nuxt/test-utils` is intentionally pinned to `3.14.0` because current newer 3.x releases require Vitest 3, while this MVP baseline uses Vitest 2.
 
 - [ ] **Step 8: Create environment and README**
 
