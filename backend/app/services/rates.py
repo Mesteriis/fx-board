@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -24,7 +23,7 @@ from app.telegram.notifications import (
 
 logger = logging.getLogger(__name__)
 
-RATE_RESPONSE_SOURCE = "google_rates_csv"
+RATE_RESPONSE_SOURCE = "googlefinance"
 FOUR_DECIMALS = Decimal("0.0001")
 EXPECTED_COLUMNS = {"pair", "rate", "source", "updated_at"}
 
@@ -110,14 +109,8 @@ async def get_rates(
                     raw_payload=csv_text,
                 )
             )
-        await db.commit()
+        await db.flush()
         return _rates_response(await _rates_for_date(db, today), rate_date=today, is_stale=False)
-    except IntegrityError:
-        await db.rollback()
-        rows = await _rates_for_date(db, today)
-        if rows:
-            return _rates_response(rows, rate_date=today, is_stale=False)
-        raise
     except (httpx.HTTPError, ValueError) as exc:
         return await _stale_rates_response(
             db,
@@ -141,11 +134,9 @@ def _parse_rates_csv_rows(csv_text: str) -> dict[str, ParsedRate]:
 
         raw_rate = (row.get("rate") or "").strip()
         try:
-            rate = Decimal(raw_rate)
-        except InvalidOperation as exc:
+            rate = _parse_positive_rate(raw_rate)
+        except ValueError as exc:
             raise ValueError(f"invalid rate for {pair}") from exc
-        if rate <= 0:
-            raise ValueError(f"non-positive rate for {pair}")
 
         source = (row.get("source") or "").strip()
         if not source:
@@ -217,4 +208,23 @@ def _rates_response(rows: list[Rate], *, rate_date, is_stale: bool) -> RatesResp
 
 
 def _format_rate(rate: Decimal) -> str:
-    return f"{rate.quantize(FOUR_DECIMALS):.4f}"
+    try:
+        return f"{rate.quantize(FOUR_DECIMALS):.4f}"
+    except InvalidOperation as exc:
+        raise ValueError("invalid rate precision") from exc
+
+
+def _parse_positive_rate(raw_rate: str) -> Decimal:
+    try:
+        rate = Decimal(raw_rate)
+    except InvalidOperation as exc:
+        raise ValueError("invalid decimal") from exc
+    if not rate.is_finite():
+        raise ValueError("rate must be finite")
+    if rate <= 0:
+        raise ValueError("rate must be positive")
+    try:
+        rate.quantize(FOUR_DECIMALS)
+    except InvalidOperation as exc:
+        raise ValueError("invalid decimal precision") from exc
+    return rate

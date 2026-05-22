@@ -18,4 +18,6 @@ async def rates(
     settings: Annotated[Settings, Depends(get_settings)],
     notification_sink: Annotated[NotificationSink, Depends(get_notification_sink)],
 ) -> RatesResponse:
-    return await get_rates(db, settings=settings, notification_sink=notification_sink)
+    response = await get_rates(db, settings=settings, notification_sink=notification_sink)
+    await db.commit()
+    return response

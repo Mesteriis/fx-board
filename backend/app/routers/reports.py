@@ -15,7 +15,11 @@ from app.services import reports as reports_service
 from app.services.access import TelegramMembershipClient, ensure_required_channels
 from app.services.auth import require_csrf, require_current_user
 from app.telegram.client import TelegramApiError
-from app.telegram.notifications import NotificationSink, get_notification_sink
+from app.telegram.notifications import (
+    NotificationSink,
+    get_notification_sink,
+    notify_admin_auto_hide_ad,
+)
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 logger = logging.getLogger(__name__)
@@ -60,12 +64,17 @@ async def create_report(
         window_seconds=86400,
     )
     await db.commit()
-    report = await reports_service.create_report(
+    report, auto_hide_notification = await reports_service.create_report(
         db,
         reporter_user_id=user.id,
         payload=payload,
         auto_hide_threshold=settings.reports_to_auto_hide,
-        notification_sink=notification_sink,
     )
     await db.commit()
+    if auto_hide_notification is not None:
+        await notify_admin_auto_hide_ad(
+            notification_sink,
+            ad_id=auto_hide_notification[0],
+            report_count=auto_hide_notification[1],
+        )
     return reports_service.report_response(report)
