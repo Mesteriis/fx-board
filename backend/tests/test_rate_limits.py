@@ -122,6 +122,38 @@ async def test_check_rate_limit_ignores_old_window_events(test_session) -> None:
     assert events[0].created_at > old_event.created_at
 
 
+async def test_check_rate_limit_cleanup_does_not_delete_other_actions(test_session) -> None:
+    old_auth_event = RateLimitEvent(
+        key="ip:old",
+        action="auth.telegram_webapp",
+        created_at=utc_now() - timedelta(seconds=61),
+    )
+    report_event = RateLimitEvent(
+        key="user:1",
+        action="reports.create",
+        created_at=utc_now() - timedelta(hours=2),
+    )
+    test_session.add_all([old_auth_event, report_event])
+    await test_session.commit()
+
+    await check_rate_limit(
+        test_session,
+        key="ip:1",
+        action="auth.telegram_webapp",
+        limit=10,
+        window_seconds=60,
+    )
+    await test_session.commit()
+
+    events = (
+        await test_session.execute(select(RateLimitEvent).order_by(RateLimitEvent.action))
+    ).scalars().all()
+    assert [(event.key, event.action) for event in events] == [
+        ("ip:1", "auth.telegram_webapp"),
+        ("user:1", "reports.create"),
+    ]
+
+
 async def test_auth_rate_limit_is_enforced_by_ip(client, make_init_data) -> None:
     for index in range(10):
         response = await client.post(
@@ -200,6 +232,27 @@ async def test_report_rate_limit_is_enforced_by_user(
         "/api/reports",
         json={"ad_id": blocked_ad_id, "target_user_id": blocked_target_id, "reason": "SCAM"},
         headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "rate limit exceeded"
+
+
+async def test_contact_attempt_rate_limit_is_enforced_by_user(client, authenticate) -> None:
+    author_csrf = await authenticate(client, telegram_id=8501, username="author")
+    ad_id = await create_ad(client, author_csrf)
+    initiator_csrf = await authenticate(client, telegram_id=8502, username="initiator")
+
+    for _ in range(20):
+        response = await client.post(
+            f"/api/ads/{ad_id}/contact",
+            headers={"X-CSRF-Token": initiator_csrf},
+        )
+        assert response.status_code == 201
+
+    response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
     )
 
     assert response.status_code == 403

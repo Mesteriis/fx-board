@@ -6,6 +6,7 @@ from sqlalchemy.orm import aliased
 from app.core.errors import AppError
 from app.core.time import utc_now
 from app.db.models import Ad, Report, User
+from app.db.transactions import begin_sqlite_immediate
 from app.schemas.admin import (
     AdminReportListResponse,
     AdminReportResponse,
@@ -25,6 +26,7 @@ async def create_report(
     payload: ReportCreateRequest,
     auto_hide_threshold: int,
 ) -> Report:
+    await begin_sqlite_immediate(db)
     if reporter_user_id == payload.target_user_id:
         raise AppError("cannot report yourself")
 

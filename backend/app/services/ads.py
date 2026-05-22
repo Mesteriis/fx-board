@@ -1,13 +1,14 @@
 from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError, ForbiddenError
 from app.core.time import utc_now
 from app.db.models import Ad, User
+from app.db.transactions import begin_sqlite_immediate
 from app.schemas.ads import (
     AdCreateRequest,
     AdDetailResponse,
@@ -199,15 +200,6 @@ async def revoke_ad(db: AsyncSession, *, ad_id: int, user: User) -> Ad:
     ad.updated_at = now
     await db.flush()
     return ad
-
-
-async def begin_sqlite_immediate(db: AsyncSession) -> None:
-    bind = db.get_bind()
-    if bind.dialect.name != "sqlite":
-        return
-    if db.in_transaction():
-        raise RuntimeError("BEGIN IMMEDIATE requires no active transaction")
-    await db.execute(text("BEGIN IMMEDIATE"))
 
 
 def ad_list_item_response(ad: Ad) -> AdListItemResponse:

@@ -190,6 +190,14 @@ async def contact_ad(
     settings: Annotated[Settings, Depends(get_settings)],
     user: Annotated[User, Depends(require_mutating_user)],
 ) -> ContactAttemptResponse:
+    await check_rate_limit(
+        db,
+        key=f"user:{user.id}",
+        action="ads.contact",
+        limit=20,
+        window_seconds=3600,
+    )
+    await db.commit()
     contact_attempt, telegram_url = await contacts_service.create_contact_attempt(
         db,
         ad_id=ad_id,

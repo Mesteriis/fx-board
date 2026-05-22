@@ -12,9 +12,9 @@ from app.core.time import utc_now
 from app.db.base import Base
 from app.db.models import Ad, User, UserChannelMembership
 from app.db.session import create_engine, get_session
+from app.db.transactions import begin_sqlite_immediate
 from app.main import create_app
 from app.routers.auth import get_telegram_client
-from app.services.ads import begin_sqlite_immediate
 
 
 def ad_payload(**overrides: object) -> dict[str, object]:

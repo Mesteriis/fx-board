@@ -155,6 +155,47 @@ async def test_report_requires_csrf(client, authenticate, test_session) -> None:
     assert response.json()["message"] == "invalid csrf token"
 
 
+async def test_invalid_csrf_does_not_check_required_channel_on_report(
+    client_with_required_channel,
+    fake_telegram_client,
+    authenticate,
+    test_session,
+) -> None:
+    author_csrf = await authenticate(
+        client_with_required_channel,
+        telegram_id=6053,
+        username="author",
+    )
+    ad_id = await create_ad(client_with_required_channel, author_csrf)
+    author_id = await user_id_for_telegram_id(test_session, 6053)
+    await authenticate(
+        client_with_required_channel,
+        telegram_id=6054,
+        username="reporter",
+    )
+    membership = (
+        await test_session.execute(
+            select(UserChannelMembership)
+            .join(User, User.id == UserChannelMembership.user_id)
+            .where(User.telegram_id == 6054)
+        )
+    ).scalar_one()
+    membership.expires_at = utc_now() - timedelta(seconds=1)
+    await test_session.commit()
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+    call_count = len(fake_telegram_client.calls)
+
+    response = await client_with_required_channel.post(
+        "/api/reports",
+        json={"ad_id": ad_id, "target_user_id": author_id, "reason": "SCAM"},
+        headers={"X-CSRF-Token": "invalid"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "invalid csrf token"
+    assert len(fake_telegram_client.calls) == call_count
+
+
 async def test_required_channel_denies_report(
     client_with_required_channel,
     fake_telegram_client,

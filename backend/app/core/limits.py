@@ -19,7 +19,15 @@ async def check_rate_limit(
     now = utc_now()
     window_start = now - timedelta(seconds=window_seconds)
 
-    await db.execute(delete(RateLimitEvent).where(RateLimitEvent.created_at < window_start))
+    await db.execute(
+        delete(RateLimitEvent).where(
+            RateLimitEvent.action == action,
+            RateLimitEvent.created_at < window_start,
+        )
+    )
+    db.add(RateLimitEvent(key=key, action=action, created_at=now))
+    await db.flush()
+
     count = await db.scalar(
         select(func.count())
         .select_from(RateLimitEvent)
@@ -29,8 +37,5 @@ async def check_rate_limit(
             RateLimitEvent.created_at >= window_start,
         )
     )
-    if int(count or 0) >= limit:
+    if int(count or 0) > limit:
         raise ForbiddenError("rate limit exceeded")
-
-    db.add(RateLimitEvent(key=key, action=action, created_at=now))
-    await db.flush()
