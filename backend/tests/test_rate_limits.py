@@ -103,7 +103,7 @@ async def test_check_rate_limit_ignores_old_window_events(test_session) -> None:
     old_event = RateLimitEvent(
         key="user:1",
         action="report",
-        created_at=utc_now() - timedelta(seconds=61),
+        created_at=utc_now() - timedelta(days=2),
     )
     test_session.add(old_event)
     await test_session.commit()
@@ -122,11 +122,38 @@ async def test_check_rate_limit_ignores_old_window_events(test_session) -> None:
     assert events[0].created_at > old_event.created_at
 
 
-async def test_check_rate_limit_cleanup_does_not_delete_other_actions(test_session) -> None:
+async def test_check_rate_limit_preserves_same_action_longer_window_events(test_session) -> None:
+    long_window_event = RateLimitEvent(
+        key="user:long",
+        action="shared.action",
+        created_at=utc_now() - timedelta(hours=2),
+    )
+    test_session.add(long_window_event)
+    await test_session.commit()
+
+    await check_rate_limit(
+        test_session,
+        key="user:short",
+        action="shared.action",
+        limit=10,
+        window_seconds=60,
+    )
+    await test_session.commit()
+
+    events = (
+        await test_session.execute(select(RateLimitEvent).order_by(RateLimitEvent.key))
+    ).scalars().all()
+    assert [(event.key, event.action) for event in events] == [
+        ("user:long", "shared.action"),
+        ("user:short", "shared.action"),
+    ]
+
+
+async def test_check_rate_limit_cleanup_keeps_retention_bounded(test_session) -> None:
     old_auth_event = RateLimitEvent(
         key="ip:old",
         action="auth.telegram_webapp",
-        created_at=utc_now() - timedelta(seconds=61),
+        created_at=utc_now() - timedelta(days=2),
     )
     report_event = RateLimitEvent(
         key="user:1",
