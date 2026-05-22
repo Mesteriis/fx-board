@@ -9,6 +9,14 @@ It is not an exchange, payment processor, escrow service, or custody product.
 
 Project page: <https://mesteriis.github.io/fx-board/>
 
+## Preview
+
+| Board | Rates |
+| --- | --- |
+| <img src="docs/assets/readme/fx-board-board.png" alt="FX Board mobile board" width="320"> | <img src="docs/assets/readme/fx-board-rates.png" alt="FX Board rates and converter" width="320"> |
+
+<img src="docs/assets/readme/fx-board-walkthrough.gif" alt="FX Board mobile walkthrough" width="320">
+
 ## Features
 
 - Telegram Mini App / WebApp authentication through signed `initData`.
