@@ -10,7 +10,7 @@ const loadingRates = ref(true)
 
 watch(auth, async (value) => {
   if (value) {
-    await Promise.all([loadAds(), loadRates()])
+    await Promise.allSettled([loadAds(), loadRates()])
   }
 }, { immediate: true })
 
@@ -18,6 +18,8 @@ async function loadAds() {
   loadingAds.value = true
   try {
     ads.value = await apiFetch<AdsBySideResponse>('/ads')
+  } catch {
+    ads.value = null
   } finally {
     loadingAds.value = false
   }
@@ -27,6 +29,8 @@ async function loadRates() {
   loadingRates.value = true
   try {
     rates.value = await apiFetch<RatesResponse>('/rates')
+  } catch {
+    rates.value = null
   } finally {
     loadingRates.value = false
   }
