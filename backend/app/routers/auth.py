@@ -6,14 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError, UnauthorizedError
-from app.core.security import hash_ip
+from app.core.security import hash_ip, sign_csrf_token, unsigned_csrf_token
 from app.core.time import utc_now
+from app.db.models import Session as DbSession
 from app.db.models import User
 from app.db.session import get_session
 from app.schemas.auth import AccessResponse, AuthResponse, TelegramWebAppAuthRequest
 from app.services.access import TelegramMembershipClient, ensure_required_channels
 from app.services.auth import (
     InitDataError,
+    require_csrf,
+    require_current_session,
     require_current_user,
     to_user_response,
     upsert_telegram_user,
@@ -40,7 +43,7 @@ async def telegram_webapp_auth(
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     telegram_client: Annotated[TelegramMembershipClient, Depends(get_telegram_client)],
-) -> AccessResponse:
+) -> AuthResponse:
     try:
         telegram_user = verify_telegram_init_data(
             init_data=payload.init_data,
@@ -59,7 +62,7 @@ async def telegram_webapp_auth(
     if not access.allowed:
         raise ForbiddenError("required channel membership missing")
 
-    session_id, csrf_token = await create_session(
+    session_id, raw_csrf_token = await create_session(
         db,
         user_id=user.id,
         ttl_seconds=settings.session_ttl_seconds,
@@ -71,8 +74,18 @@ async def telegram_webapp_auth(
     )
     await db.commit()
 
-    _set_auth_cookies(response, settings=settings, session_id=session_id, csrf_token=csrf_token)
-    return AuthResponse(user=to_user_response(user), access=access, csrf_token=csrf_token)
+    signed_csrf_token = sign_csrf_token(
+        session_id=session_id,
+        raw_token=raw_csrf_token,
+        secret=settings.session_secret.get_secret_value(),
+    )
+    _set_auth_cookies(
+        response,
+        settings=settings,
+        session_id=session_id,
+        csrf_token=signed_csrf_token,
+    )
+    return AuthResponse(user=to_user_response(user), access=access, csrf_token=raw_csrf_token)
 
 
 @router.get("/me", response_model=AuthResponse)
@@ -85,7 +98,7 @@ async def me(
 ) -> AuthResponse:
     access = await _ensure_access(db, user=user, settings=settings, telegram_client=telegram_client)
     await db.commit()
-    csrf_token = request.cookies.get("csrf_token", "")
+    csrf_token = unsigned_csrf_token(request.cookies.get("csrf_token"))
     return AuthResponse(user=to_user_response(user), access=access, csrf_token=csrf_token)
 
 
@@ -95,8 +108,10 @@ async def logout(
     response: Response,
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    session: Annotated[DbSession, Depends(require_current_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
 ) -> dict[str, bool]:
-    await delete_session(db, session_id=request.cookies.get(settings.session_cookie_name))
+    await delete_session(db, session_id=session.id)
     await db.commit()
     response.delete_cookie(settings.session_cookie_name, path="/")
     response.delete_cookie("csrf_token", path="/")
@@ -137,7 +152,7 @@ async def _ensure_access(
     user: User,
     settings: Settings,
     telegram_client: TelegramMembershipClient,
-) -> AuthResponse:
+) -> AccessResponse:
     try:
         return await ensure_required_channels(
             db,

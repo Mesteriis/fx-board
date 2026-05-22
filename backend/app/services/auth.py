@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError, UnauthorizedError
-from app.core.security import verify_double_submit_csrf
+from app.core.security import verify_csrf_token
 from app.core.time import utc_now
+from app.db.models import Session as DbSession
 from app.db.models import User
 from app.db.session import get_session
 from app.schemas.auth import UserResponse
@@ -145,10 +146,7 @@ async def require_current_user(
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> User:
-    session_id = request.cookies.get(settings.session_cookie_name)
-    db_session = await get_valid_session(db, session_id=session_id)
-    if db_session is None:
-        raise UnauthorizedError("authentication required")
+    db_session = await require_current_session(request, db, settings)
 
     user = await db.get(User, db_session.user_id)
     if user is None:
@@ -158,11 +156,33 @@ async def require_current_user(
     return user
 
 
+async def require_current_session(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DbSession:
+    session_id = request.cookies.get(settings.session_cookie_name)
+    db_session = await get_valid_session(db, session_id=session_id)
+    if db_session is None:
+        raise UnauthorizedError("authentication required")
+    return db_session
+
+
 def require_csrf(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
     csrf_cookie: str | None = Cookie(default=None, alias="csrf_token"),
     csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
 ) -> None:
-    verify_double_submit_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+    session_id = request.cookies.get(settings.session_cookie_name)
+    if not session_id:
+        raise UnauthorizedError("authentication required")
+    verify_csrf_token(
+        session_id=session_id,
+        signed_token=csrf_cookie,
+        header_token=csrf_header,
+        secret=settings.session_secret.get_secret_value(),
+    )
 
 
 def _optional_str(value: object) -> str | None:

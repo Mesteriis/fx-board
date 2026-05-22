@@ -65,7 +65,7 @@ async def _get_required_channels(
     *,
     settings: Settings,
 ) -> list[RequiredChannel]:
-    await _seed_required_channels(db, settings.required_channels)
+    await _sync_required_channels(db, settings.required_channels)
     result = await db.execute(
         select(RequiredChannel)
         .where(RequiredChannel.is_active.is_(True))
@@ -74,15 +74,20 @@ async def _get_required_channels(
     return list(result.scalars().all())
 
 
-async def _seed_required_channels(db: AsyncSession, chat_ids: list[str]) -> None:
-    if not chat_ids:
-        return
-
-    result = await db.execute(select(RequiredChannel.chat_id))
-    existing = set(result.scalars().all())
+async def _sync_required_channels(db: AsyncSession, chat_ids: list[str]) -> None:
+    configured_chat_ids = list(dict.fromkeys(chat_ids))
+    configured = set(configured_chat_ids)
+    result = await db.execute(select(RequiredChannel))
+    existing = {channel.chat_id: channel for channel in result.scalars().all()}
     now = utc_now()
 
-    for chat_id in chat_ids:
+    for chat_id, channel in existing.items():
+        should_be_active = chat_id in configured
+        if channel.is_active != should_be_active:
+            channel.is_active = should_be_active
+            channel.updated_at = now
+
+    for chat_id in configured_chat_ids:
         if chat_id in existing:
             continue
         db.add(

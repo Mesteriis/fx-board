@@ -7,7 +7,7 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 from app.db.session import create_engine, get_session
 from app.main import create_app
-from app.telegram.client import ChatMemberResult
+from app.telegram.client import ChatMemberResult, TelegramApiError
 
 
 @pytest.fixture
@@ -27,9 +27,12 @@ class FakeTelegramClient:
     def __init__(self) -> None:
         self.status_by_chat_id: dict[str, str] = {}
         self.calls: list[tuple[str, int]] = []
+        self.fail = False
 
     async def get_chat_member(self, *, chat_id: str, user_id: int) -> ChatMemberResult:
         self.calls.append((chat_id, user_id))
+        if self.fail:
+            raise TelegramApiError("test telegram failure")
         status = self.status_by_chat_id.get(chat_id, "member")
         return ChatMemberResult(status=status, raw={"status": status})
 
