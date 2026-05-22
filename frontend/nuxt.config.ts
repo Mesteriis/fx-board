@@ -8,8 +8,8 @@ export default defineNuxtConfig({
   },
   runtimeConfig: {
     public: {
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || '/api',
-      botUsername: process.env.NUXT_PUBLIC_TELEGRAM_BOT_USERNAME || ''
+      apiBase: '/api',
+      botUsername: ''
     }
   },
   typescript: {
