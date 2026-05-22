@@ -51,7 +51,7 @@ async def create_contact_attempt(
     open_attempts = await db.execute(
         select(ContactAttempt).where(
             ContactAttempt.initiator_user_id == initiator.id,
-            ContactAttempt.status == OPENED,
+            ContactAttempt.status.in_((OPENED, ASKED_INITIATOR)),
         )
     )
     for attempt in open_attempts.scalars():

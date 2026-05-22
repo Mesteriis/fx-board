@@ -307,6 +307,46 @@ async def test_claim_due_followups_ignores_canceled_attempts_and_marks_claimed(
     assert second_response.json() == {"items": []}
 
 
+async def test_new_contact_cancels_already_asked_initiator_followup(
+    client,
+    authenticate,
+    test_session,
+) -> None:
+    first_author_csrf = await authenticate(client, telegram_id=5221, username="first_author")
+    first_ad_id = await create_ad(client, first_author_csrf)
+    second_author_csrf = await authenticate(client, telegram_id=5222, username="second_author")
+    second_ad_id = await create_ad(
+        client,
+        second_author_csrf,
+        base_currency="EUR",
+        quote_currency="USD",
+    )
+    initiator_csrf = await authenticate(client, telegram_id=5223, username="initiator")
+    first_contact = await client.post(
+        f"/api/ads/{first_ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    assert first_contact.status_code == 201
+    first_attempt = await test_session.get(
+        ContactAttempt,
+        first_contact.json()["contact_attempt_id"],
+    )
+    assert first_attempt is not None
+    first_attempt.status = "ASKED_INITIATOR"
+    await test_session.commit()
+
+    second_contact = await client.post(
+        f"/api/ads/{second_ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+
+    assert second_contact.status_code == 201
+    attempts = (
+        await test_session.execute(select(ContactAttempt).order_by(ContactAttempt.id))
+    ).scalars().all()
+    assert [attempt.status for attempt in attempts] == ["CANCELED_BY_NEW_CONTACT", "OPENED"]
+
+
 async def test_initiator_no_answer_closes_attempt(
     client,
     authenticate,
