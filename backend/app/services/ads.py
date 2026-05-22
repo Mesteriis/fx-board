@@ -28,18 +28,6 @@ class NotFoundError(AppError):
     code = "not_found"
 
 
-def db_side(side: str) -> str:
-    return side.upper()
-
-
-def api_side(side: str) -> str:
-    return side.lower()
-
-
-def api_status(status: str) -> str:
-    return status.lower()
-
-
 async def create_ad(
     db: AsyncSession,
     *,
@@ -55,7 +43,7 @@ async def create_ad(
 
     ad = Ad(
         user_id=user.id,
-        side=db_side(payload.side),
+        side=payload.side,
         base_currency=payload.base_currency,
         quote_currency=payload.quote_currency,
         amount=payload.amount,
@@ -204,7 +192,7 @@ async def revoke_ad(db: AsyncSession, *, ad_id: int, user: User) -> Ad:
 def ad_list_item_response(ad: Ad) -> AdListItemResponse:
     return AdListItemResponse(
         id=ad.id,
-        side=api_side(ad.side),  # type: ignore[arg-type]
+        side=ad.side,  # type: ignore[arg-type]
         base_currency=ad.base_currency,  # type: ignore[arg-type]
         quote_currency=ad.quote_currency,  # type: ignore[arg-type]
         amount=ad.amount,
@@ -214,7 +202,7 @@ def ad_list_item_response(ad: Ad) -> AdListItemResponse:
         payment_method=ad.payment_method,
         location=ad.location,
         comment=ad.comment,
-        status=api_status(ad.status),  # type: ignore[arg-type]
+        status=ad.status,  # type: ignore[arg-type]
         expires_at=ad.expires_at,
         created_at=ad.created_at,
         updated_at=ad.updated_at,

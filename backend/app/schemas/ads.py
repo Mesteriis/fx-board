@@ -5,8 +5,8 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Currency = Literal["USD", "EUR", "RUB", "USDT", "USDC"]
-AdSide = Literal["buy", "sell"]
-AdStatus = Literal["active", "revoked", "hidden", "expired", "completed"]
+AdSide = Literal["BUY", "SELL"]
+AdStatus = Literal["ACTIVE", "REVOKED", "HIDDEN", "EXPIRED", "COMPLETED"]
 
 DecimalAmount = Decimal
 

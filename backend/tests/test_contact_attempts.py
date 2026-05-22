@@ -8,7 +8,7 @@ from app.db.models import Ad, ContactAttempt, User, UserChannelMembership
 
 def ad_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "side": "sell",
+        "side": "SELL",
         "base_currency": "USD",
         "quote_currency": "RUB",
         "amount": "100.00",

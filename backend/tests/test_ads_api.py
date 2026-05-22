@@ -9,7 +9,7 @@ from app.db.models import Ad, User, UserChannelMembership
 
 def ad_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "side": "sell",
+        "side": "SELL",
         "base_currency": "USD",
         "quote_currency": "RUB",
         "amount": "100.00",
@@ -40,7 +40,7 @@ async def test_successful_create_and_list_split(client, authenticate) -> None:
     first_csrf = await authenticate(client, telegram_id=1001, username="seller")
     sell_response = await client.post(
         "/api/ads",
-        json=ad_payload(side="sell", base_currency="USD", quote_currency="RUB"),
+        json=ad_payload(side="SELL", base_currency="USD", quote_currency="RUB"),
         headers={"X-CSRF-Token": first_csrf},
     )
     assert sell_response.status_code == 201
@@ -48,7 +48,7 @@ async def test_successful_create_and_list_split(client, authenticate) -> None:
     second_csrf = await authenticate(client, telegram_id=1002, username="buyer")
     buy_response = await client.post(
         "/api/ads",
-        json=ad_payload(side="buy", base_currency="EUR", quote_currency="USD", rate="1.08"),
+        json=ad_payload(side="BUY", base_currency="EUR", quote_currency="USD", rate="1.08"),
         headers={"X-CSRF-Token": second_csrf},
     )
     assert buy_response.status_code == 201
@@ -117,7 +117,7 @@ async def test_update_rejects_immutable_fields(client, authenticate, test_sessio
 
     response = await client.patch(
         f"/api/ads/{ad_id}",
-        json={"side": "buy", "base_currency": "EUR", "user_id": 999},
+        json={"side": "BUY", "base_currency": "EUR", "user_id": 999},
         headers={"X-CSRF-Token": csrf_token},
     )
 
@@ -245,7 +245,7 @@ async def test_revoke_marks_ad_without_deleting(client, authenticate, test_sessi
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "revoked"
+    assert body["status"] == "REVOKED"
     assert body["revoked_at"] is not None
     ad = await test_session.get(Ad, create_response.json()["id"])
     assert ad is not None
@@ -359,7 +359,7 @@ async def test_owner_can_fetch_own_revoked_ad_but_non_owner_cannot(client, authe
     other_detail = await client.get(f"/api/ads/{ad_id}")
 
     assert owner_detail.status_code == 200
-    assert owner_detail.json()["status"] == "revoked"
+    assert owner_detail.json()["status"] == "REVOKED"
     assert other_detail.status_code == 404
 
 
