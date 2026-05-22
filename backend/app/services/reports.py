@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,13 @@ from app.schemas.ads import PaginationResponse
 from app.schemas.reports import ReportCreateRequest, ReportResponse
 from app.services.ads import ACTIVE, NotFoundError
 from app.services.audit import write_audit
+from app.telegram.notifications import (
+    NotificationSink,
+    get_notification_sink,
+    notify_admin_auto_hide_ad,
+)
+
+logger = logging.getLogger(__name__)
 
 
 async def create_report(
@@ -25,6 +34,7 @@ async def create_report(
     reporter_user_id: int,
     payload: ReportCreateRequest,
     auto_hide_threshold: int,
+    notification_sink: NotificationSink | None = None,
 ) -> Report:
     await begin_sqlite_immediate(db)
     if reporter_user_id == payload.target_user_id:
@@ -69,6 +79,7 @@ async def create_report(
             raise AppError("ad already reported") from exc
         raise
 
+    auto_hide_notification: tuple[int, int] | None = None
     if ad is not None:
         unique_count = await db.scalar(
             select(func.count(func.distinct(Report.reporter_user_id))).where(
@@ -88,7 +99,14 @@ async def create_report(
                 entity_id=ad.id,
                 payload={"report_count": ad.report_count},
             )
+            auto_hide_notification = (ad.id, ad.report_count)
         await db.flush()
+        if auto_hide_notification is not None:
+            await _notify_auto_hide_ad(
+                notification_sink,
+                ad_id=auto_hide_notification[0],
+                report_count=auto_hide_notification[1],
+            )
 
     return report
 
@@ -191,3 +209,16 @@ def admin_report_response(
         created_at=report.created_at,
         updated_at=report.updated_at,
     )
+
+
+async def _notify_auto_hide_ad(
+    notification_sink: NotificationSink | None,
+    *,
+    ad_id: int,
+    report_count: int,
+) -> None:
+    sink = notification_sink or get_notification_sink()
+    try:
+        await notify_admin_auto_hide_ad(sink, ad_id=ad_id, report_count=report_count)
+    except Exception:
+        logger.exception("failed to record auto-hide admin notification intent")

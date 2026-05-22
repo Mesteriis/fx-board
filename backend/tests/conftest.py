@@ -15,6 +15,7 @@ from app.db.base import Base
 from app.db.session import create_engine, get_session
 from app.main import create_app
 from app.telegram.client import ChatMemberResult, TelegramApiError
+from app.telegram.notifications import NotificationIntent
 
 
 @pytest.fixture
@@ -46,6 +47,14 @@ class FakeTelegramClient:
         return ChatMemberResult(status=status, raw=raw)
 
 
+class FakeNotificationSink:
+    def __init__(self) -> None:
+        self.intents: list[NotificationIntent] = []
+
+    async def record(self, intent: NotificationIntent) -> None:
+        self.intents.append(intent)
+
+
 @pytest.fixture
 def test_settings() -> Settings:
     return Settings(
@@ -62,6 +71,11 @@ def test_settings() -> Settings:
 @pytest.fixture
 def fake_telegram_client() -> FakeTelegramClient:
     return FakeTelegramClient()
+
+
+@pytest.fixture
+def fake_notification_sink() -> FakeNotificationSink:
+    return FakeNotificationSink()
 
 
 @pytest.fixture
@@ -114,8 +128,14 @@ def authenticate(make_init_data) -> Callable[..., Awaitable[str]]:
 
 
 @pytest.fixture
-async def client(test_session, test_settings, fake_telegram_client) -> AsyncClient:
+async def client(
+    test_session,
+    test_settings,
+    fake_telegram_client,
+    fake_notification_sink,
+) -> AsyncClient:
     from app.routers.auth import get_telegram_client
+    from app.telegram.notifications import get_notification_sink
 
     app = create_app()
 
@@ -125,6 +145,7 @@ async def client(test_session, test_settings, fake_telegram_client) -> AsyncClie
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_settings] = lambda: test_settings
     app.dependency_overrides[get_telegram_client] = lambda: fake_telegram_client
+    app.dependency_overrides[get_notification_sink] = lambda: fake_notification_sink
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -138,8 +159,10 @@ async def client_with_required_channel(
     test_session,
     test_settings,
     fake_telegram_client,
+    fake_notification_sink,
 ) -> AsyncClient:
     from app.routers.auth import get_telegram_client
+    from app.telegram.notifications import get_notification_sink
 
     test_settings.telegram_required_channels = "@required"
     app = create_app()
@@ -150,6 +173,7 @@ async def client_with_required_channel(
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_settings] = lambda: test_settings
     app.dependency_overrides[get_telegram_client] = lambda: fake_telegram_client
+    app.dependency_overrides[get_notification_sink] = lambda: fake_notification_sink
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

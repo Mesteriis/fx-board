@@ -1,18 +1,20 @@
 import json
 from typing import cast
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ForbiddenError
 from app.core.time import utc_now
-from app.db.models import Ad, AuditLog, Report, User
+from app.db.models import Ad, AuditLog, Rate, Report, User
 from app.schemas.admin import (
     AdminAdResponse,
     AdminAuditLogItemResponse,
     AdminAuditLogResponse,
     AdminBanUserRequest,
     AdminDashboardResponse,
+    AdminRatesStatusResponse,
     AdminUserResponse,
 )
 from app.schemas.ads import PaginationResponse
@@ -20,7 +22,11 @@ from app.services.ads import ACTIVE, NotFoundError, ad_detail_response
 from app.services.audit import write_audit
 
 
-async def get_dashboard(db: AsyncSession) -> AdminDashboardResponse:
+async def get_dashboard(
+    db: AsyncSession,
+    *,
+    rates_refresh_timezone: str,
+) -> AdminDashboardResponse:
     users_total = await _count(db, select(func.count()).select_from(User))
     users_banned = await _count(
         db,
@@ -44,6 +50,31 @@ async def get_dashboard(db: AsyncSession) -> AdminDashboardResponse:
         ads_active=ads_active,
         ads_hidden=ads_hidden,
         reports_new=reports_new,
+        rates=await get_rates_status(db, rates_refresh_timezone=rates_refresh_timezone),
+    )
+
+
+async def get_rates_status(
+    db: AsyncSession,
+    *,
+    rates_refresh_timezone: str,
+) -> AdminRatesStatusResponse:
+    latest_rate = await db.scalar(
+        select(Rate).order_by(Rate.rate_date.desc(), Rate.fetched_at.desc()).limit(1)
+    )
+    if latest_rate is None:
+        return AdminRatesStatusResponse(
+            status="missing",
+            latest_date=None,
+            last_updated_at=None,
+        )
+
+    today = utc_now().astimezone(ZoneInfo(rates_refresh_timezone)).date()
+    status = "fresh" if latest_rate.rate_date == today else "stale"
+    return AdminRatesStatusResponse(
+        status=status,
+        latest_date=latest_rate.rate_date,
+        last_updated_at=latest_rate.fetched_at,
     )
 
 

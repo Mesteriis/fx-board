@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError
 from app.db.models import User
 from app.db.session import get_session
@@ -113,9 +114,13 @@ async def restore_ad(
 @router.get("/dashboard", response_model=AdminDashboardResponse)
 async def dashboard(
     db: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
     _admin: Annotated[User, Depends(require_admin_user)],
 ) -> AdminDashboardResponse:
-    return await admin_service.get_dashboard(db)
+    return await admin_service.get_dashboard(
+        db,
+        rates_refresh_timezone=settings.rates_refresh_timezone,
+    )
 
 
 @router.get("/audit-log", response_model=AdminAuditLogResponse)

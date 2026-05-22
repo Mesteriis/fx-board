@@ -1,10 +1,11 @@
 import json
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from app.core.time import utc_now
-from app.db.models import Ad, AuditLog, Report, User
+from app.db.models import Ad, AuditLog, Rate, Report, User
 
 
 def make_user(
@@ -106,6 +107,42 @@ async def test_admin_dashboard_returns_moderation_counts(
         "ads_active": 1,
         "ads_hidden": 1,
         "reports_new": 1,
+        "rates": {
+            "status": "missing",
+            "latest_date": None,
+            "last_updated_at": None,
+        },
+    }
+
+
+async def test_admin_dashboard_includes_latest_rates_status(
+    client,
+    authenticate,
+    test_session,
+    test_settings,
+) -> None:
+    today = utc_now().astimezone(ZoneInfo(test_settings.rates_refresh_timezone)).date()
+    fetched_at = utc_now()
+    test_session.add(
+        Rate(
+            pair="USD/RUB",
+            rate=Decimal("92.5000"),
+            source="googlefinance",
+            rate_date=today,
+            fetched_at=fetched_at,
+            raw_payload="csv",
+        )
+    )
+    await test_session.commit()
+    await authenticate(client, telegram_id=123, username="admin")
+
+    response = await client.get("/api/admin/dashboard")
+
+    assert response.status_code == 200
+    assert response.json()["rates"] == {
+        "status": "fresh",
+        "latest_date": today.isoformat(),
+        "last_updated_at": fetched_at.isoformat().replace("+00:00", "Z"),
     }
 
 

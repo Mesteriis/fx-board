@@ -15,6 +15,7 @@ from app.services import reports as reports_service
 from app.services.access import TelegramMembershipClient, ensure_required_channels
 from app.services.auth import require_csrf, require_current_user
 from app.telegram.client import TelegramApiError
+from app.telegram.notifications import NotificationSink, get_notification_sink
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ async def create_report(
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     user: Annotated[User, Depends(require_report_user)],
+    notification_sink: Annotated[NotificationSink, Depends(get_notification_sink)],
 ) -> ReportResponse:
     await check_rate_limit(
         db,
@@ -63,6 +65,7 @@ async def create_report(
         reporter_user_id=user.id,
         payload=payload,
         auto_hide_threshold=settings.reports_to_auto_hide,
+        notification_sink=notification_sink,
     )
     await db.commit()
     return reports_service.report_response(report)

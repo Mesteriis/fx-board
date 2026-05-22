@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -52,12 +53,19 @@ class AdminBanUserRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class AdminRatesStatusResponse(BaseModel):
+    status: Literal["missing", "fresh", "stale"]
+    latest_date: date | None
+    last_updated_at: datetime | None
+
+
 class AdminDashboardResponse(BaseModel):
     users_total: int
     users_banned: int
     ads_active: int
     ads_hidden: int
     reports_new: int
+    rates: AdminRatesStatusResponse
 
 
 class AdminAuditLogItemResponse(BaseModel):

@@ -107,6 +107,7 @@ async def test_three_unique_reports_hide_ad_and_write_audit_log(
     authenticate,
     test_session,
     test_settings,
+    fake_notification_sink,
 ) -> None:
     test_settings.reports_to_auto_hide = 3
     author_csrf = await authenticate(client, telegram_id=6031, username="author")
@@ -135,6 +136,11 @@ async def test_three_unique_reports_hide_ad_and_write_audit_log(
     assert [(entry.action, entry.entity_type, entry.entity_id) for entry in audit_log] == [
         ("auto_hide_ad", "ad", ad_id)
     ]
+    assert [intent.kind for intent in fake_notification_sink.intents] == ["admin_auto_hide_ad"]
+    assert fake_notification_sink.intents[0].payload == {
+        "ad_id": ad_id,
+        "report_count": 3,
+    }
 
     response = await client.get(f"/api/ads/{ad_id}")
     assert response.status_code == 404
