@@ -3,6 +3,7 @@
 !.env.example
 
 .superpowers/
+.worktrees/
 data/
 
 __pycache__/
