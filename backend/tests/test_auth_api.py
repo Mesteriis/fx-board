@@ -4,10 +4,17 @@ import json
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.core.config import Settings, get_settings
 from app.core.time import utc_now
+from app.db.base import Base
 from app.db.models import RequiredChannel, Session, User, UserChannelMembership
+from app.db.session import create_engine, get_session
+from app.main import create_app
+from app.routers.auth import get_telegram_client
 
 
 def signed_init_data(
@@ -162,6 +169,61 @@ async def test_auth_denies_missing_required_channel(
     assert response.status_code == 403
     body = response.json()
     assert body["code"] == "forbidden"
+
+
+async def test_denied_channel_auth_persists_negative_cache_without_session_cookie(
+    tmp_path,
+    fake_telegram_client,
+) -> None:
+    database_path = tmp_path / "denied-cache.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = Settings(
+        app_env="development",
+        session_secret="test_session_secret_that_is_long_enough",
+        telegram_bot_token="123456:test",
+        telegram_bot_username="test_bot",
+        telegram_webhook_secret="test_webhook_secret",
+        telegram_required_channels="@required",
+        admin_telegram_ids="123",
+    )
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+    app = create_app()
+
+    async def override_session():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_telegram_client] = lambda: fake_telegram_client
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/auth/telegram-webapp",
+                json={"init_data": signed_init_data()},
+            )
+
+            assert response.status_code == 403
+            assert client.cookies.get(settings.session_cookie_name) is None
+
+        async with session_factory() as session:
+            user = (await session.execute(select(User))).scalar_one()
+            membership = (await session.execute(select(UserChannelMembership))).scalar_one()
+            sessions = (await session.execute(select(Session))).scalars().all()
+            assert user.telegram_id == 123
+            assert membership.is_member is False
+            assert membership.telegram_status == "left"
+            assert sessions == []
+    finally:
+        await engine.dispose()
 
 
 async def test_logout_requires_valid_session(client) -> None:

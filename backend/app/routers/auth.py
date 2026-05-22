@@ -60,6 +60,7 @@ async def telegram_webapp_auth(
 
     access = await _ensure_access(db, user=user, settings=settings, telegram_client=telegram_client)
     if not access.allowed:
+        await db.commit()
         raise ForbiddenError("required channel membership missing")
 
     session_id, raw_csrf_token = await create_session(
