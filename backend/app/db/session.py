@@ -1,7 +1,6 @@
 import os
 from collections.abc import AsyncIterator
 
-from pydantic import ValidationError
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -10,7 +9,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.core.config import get_settings
 from app.db.base import Base
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./data/app.db"
@@ -20,14 +18,7 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_database_url() -> str:
-    database_url = os.getenv("DATABASE_URL")
-    if database_url:
-        return database_url
-
-    try:
-        return get_settings().database_url
-    except ValidationError:
-        return DEFAULT_DATABASE_URL
+    return os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
 
 
 def create_engine(database_url: str | None = None) -> AsyncEngine:

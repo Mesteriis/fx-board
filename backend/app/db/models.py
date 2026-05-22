@@ -5,7 +5,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -17,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.db.types import UTCDateTime
 
 
 class User(Base):
@@ -36,10 +36,10 @@ class User(Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_banned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     banned_reason: Mapped[str | None] = mapped_column(String(500))
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class Session(Base):
@@ -48,9 +48,9 @@ class Session(Base):
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_used_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     user_agent: Mapped[str | None] = mapped_column(String(500))
     ip_hash: Mapped[str | None] = mapped_column(String(128))
 
@@ -64,8 +64,8 @@ class RequiredChannel(Base):
     public_url: Mapped[str | None] = mapped_column(String(512))
     invite_url: Mapped[str | None] = mapped_column(String(512))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class UserChannelMembership(Base):
@@ -80,8 +80,8 @@ class UserChannelMembership(Base):
     channel_id: Mapped[int] = mapped_column(ForeignKey("required_channels.id"), nullable=False)
     telegram_status: Mapped[str | None] = mapped_column(String(64))
     is_member: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     raw_response_json: Mapped[str | None] = mapped_column(Text)
 
 
@@ -123,12 +123,12 @@ class Ad(Base):
     comment: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     report_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    hidden_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class Report(Base):
@@ -154,9 +154,9 @@ class Report(Base):
     comment: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     resolved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 Index(
@@ -180,7 +180,7 @@ class Rate(Base):
     rate: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     rate_date: Mapped[date] = mapped_column(Date, nullable=False)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     raw_payload: Mapped[str | None] = mapped_column(Text)
 
 
@@ -195,7 +195,7 @@ class AuditLog(Base):
     entity_id: Mapped[int | None] = mapped_column(Integer)
     payload_json: Mapped[str | None] = mapped_column(Text)
     ip_hash: Mapped[str | None] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class RateLimitEvent(Base):
@@ -205,7 +205,7 @@ class RateLimitEvent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     key: Mapped[str] = mapped_column(String(160), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class ContactAttempt(Base):
@@ -226,8 +226,8 @@ class ContactAttempt(Base):
     author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     ad_id: Mapped[int] = mapped_column(ForeignKey("ads.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False)
-    followup_due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    initiator_answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    author_answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    followup_due_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    initiator_answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    author_answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
