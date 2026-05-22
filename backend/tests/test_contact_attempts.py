@@ -3,7 +3,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from app.core.time import utc_now
-from app.db.models import Ad, ContactAttempt, User
+from app.db.models import Ad, ContactAttempt, User, UserChannelMembership
 
 
 def ad_payload(**overrides: object) -> dict[str, object]:
@@ -89,6 +89,52 @@ async def test_contact_creates_attempt_and_returns_telegram_url(
     assert attempt.followup_due_at >= before + timedelta(hours=3)
 
 
+async def test_contact_rejects_missing_and_invalid_csrf(client, authenticate) -> None:
+    author_csrf = await authenticate(client, telegram_id=5101, username="author")
+    ad_id = await create_ad(client, author_csrf)
+
+    await authenticate(client, telegram_id=5102, username="initiator")
+    missing_response = await client.post(f"/api/ads/{ad_id}/contact")
+    invalid_response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": "invalid"},
+    )
+
+    assert missing_response.status_code == 403
+    assert missing_response.json()["message"] == "invalid csrf token"
+    assert invalid_response.status_code == 403
+    assert invalid_response.json()["message"] == "invalid csrf token"
+
+
+async def test_required_channel_denies_contact(
+    client_with_required_channel,
+    fake_telegram_client,
+    authenticate,
+    test_session,
+) -> None:
+    author_csrf = await authenticate(
+        client_with_required_channel,
+        telegram_id=5103,
+        username="author",
+    )
+    ad_id = await create_ad(client_with_required_channel, author_csrf)
+    initiator_csrf = await authenticate(
+        client_with_required_channel,
+        telegram_id=5104,
+        username="initiator",
+    )
+    await expire_required_channel_membership(test_session, telegram_id=5104)
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+
+    response = await client_with_required_channel.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "required channel membership missing"
+
+
 async def test_new_contact_cancels_prior_pending_followup(
     client,
     authenticate,
@@ -166,3 +212,15 @@ async def test_contact_rejects_non_active_ad(client, authenticate, test_session)
     )
 
     assert response.status_code == 404
+
+
+async def expire_required_channel_membership(test_session, *, telegram_id: int) -> None:
+    membership = (
+        await test_session.execute(
+            select(UserChannelMembership)
+            .join(User, User.id == UserChannelMembership.user_id)
+            .where(User.telegram_id == telegram_id)
+        )
+    ).scalar_one()
+    membership.expires_at = utc_now() - timedelta(seconds=1)
+    await test_session.commit()

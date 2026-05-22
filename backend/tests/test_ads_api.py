@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.core.time import utc_now
-from app.db.models import Ad, UserChannelMembership
+from app.db.models import Ad, User, UserChannelMembership
 
 
 def ad_payload(**overrides: object) -> dict[str, object]:
@@ -156,6 +156,58 @@ async def test_update_allows_mutable_fields(client, authenticate, test_session) 
     assert ad.rate == Decimal("93.00000000")
 
 
+async def test_update_rejects_missing_and_invalid_csrf(client, authenticate) -> None:
+    csrf_token = await authenticate(client)
+    create_response = await client.post(
+        "/api/ads",
+        json=ad_payload(),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert create_response.status_code == 201
+    ad_id = create_response.json()["id"]
+
+    missing_response = await client.patch(
+        f"/api/ads/{ad_id}",
+        json={"comment": "missing csrf"},
+    )
+    invalid_response = await client.patch(
+        f"/api/ads/{ad_id}",
+        json={"comment": "invalid csrf"},
+        headers={"X-CSRF-Token": "invalid"},
+    )
+
+    assert missing_response.status_code == 403
+    assert missing_response.json()["message"] == "invalid csrf token"
+    assert invalid_response.status_code == 403
+    assert invalid_response.json()["message"] == "invalid csrf token"
+
+
+async def test_required_channel_denies_update(
+    client_with_required_channel,
+    fake_telegram_client,
+    authenticate,
+    test_session,
+) -> None:
+    csrf_token = await authenticate(client_with_required_channel, telegram_id=1501)
+    create_response = await client_with_required_channel.post(
+        "/api/ads",
+        json=ad_payload(),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert create_response.status_code == 201
+    await expire_required_channel_membership(test_session, telegram_id=1501)
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+
+    response = await client_with_required_channel.patch(
+        f"/api/ads/{create_response.json()['id']}",
+        json={"comment": "blocked"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "required channel membership missing"
+
+
 async def test_revoke_rejects_non_owner(client, authenticate, test_session) -> None:
     csrf_token = await authenticate(client, telegram_id=2001, username="owner")
     create_response = await client.post(
@@ -201,6 +253,53 @@ async def test_revoke_marks_ad_without_deleting(client, authenticate, test_sessi
     assert ad.revoked_at is not None
 
 
+async def test_revoke_rejects_missing_and_invalid_csrf(client, authenticate) -> None:
+    csrf_token = await authenticate(client)
+    create_response = await client.post(
+        "/api/ads",
+        json=ad_payload(),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert create_response.status_code == 201
+    ad_id = create_response.json()["id"]
+
+    missing_response = await client.post(f"/api/ads/{ad_id}/revoke")
+    invalid_response = await client.post(
+        f"/api/ads/{ad_id}/revoke",
+        headers={"X-CSRF-Token": "invalid"},
+    )
+
+    assert missing_response.status_code == 403
+    assert missing_response.json()["message"] == "invalid csrf token"
+    assert invalid_response.status_code == 403
+    assert invalid_response.json()["message"] == "invalid csrf token"
+
+
+async def test_required_channel_denies_revoke(
+    client_with_required_channel,
+    fake_telegram_client,
+    authenticate,
+    test_session,
+) -> None:
+    csrf_token = await authenticate(client_with_required_channel, telegram_id=2501)
+    create_response = await client_with_required_channel.post(
+        "/api/ads",
+        json=ad_payload(),
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert create_response.status_code == 201
+    await expire_required_channel_membership(test_session, telegram_id=2501)
+    fake_telegram_client.status_by_chat_id["@required"] = "left"
+
+    response = await client_with_required_channel.post(
+        f"/api/ads/{create_response.json()['id']}/revoke",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "required channel membership missing"
+
+
 async def test_my_ads_returns_current_users_ads_only(client, authenticate) -> None:
     first_csrf = await authenticate(client, telegram_id=3001, username="first")
     first_ad = await client.post(
@@ -240,6 +339,30 @@ async def test_public_detail_allows_active_ad(client, authenticate) -> None:
     assert response.json()["author"]["username"] == "seller"
 
 
+async def test_owner_can_fetch_own_revoked_ad_but_non_owner_cannot(client, authenticate) -> None:
+    owner_csrf = await authenticate(client, telegram_id=4101, username="owner")
+    create_response = await client.post(
+        "/api/ads",
+        json=ad_payload(),
+        headers={"X-CSRF-Token": owner_csrf},
+    )
+    assert create_response.status_code == 201
+    ad_id = create_response.json()["id"]
+    revoke_response = await client.post(
+        f"/api/ads/{ad_id}/revoke",
+        headers={"X-CSRF-Token": owner_csrf},
+    )
+    assert revoke_response.status_code == 200
+
+    owner_detail = await client.get(f"/api/ads/{ad_id}")
+    await authenticate(client, telegram_id=4102, username="other")
+    other_detail = await client.get(f"/api/ads/{ad_id}")
+
+    assert owner_detail.status_code == 200
+    assert owner_detail.json()["status"] == "revoked"
+    assert other_detail.status_code == 404
+
+
 async def test_required_channel_denies_mutating_ads_endpoint(
     client_with_required_channel,
     fake_telegram_client,
@@ -260,3 +383,15 @@ async def test_required_channel_denies_mutating_ads_endpoint(
 
     assert response.status_code == 403
     assert response.json()["message"] == "required channel membership missing"
+
+
+async def expire_required_channel_membership(test_session, *, telegram_id: int) -> None:
+    membership = (
+        await test_session.execute(
+            select(UserChannelMembership)
+            .join(User, User.id == UserChannelMembership.user_id)
+            .where(User.telegram_id == telegram_id)
+        )
+    ).scalar_one()
+    membership.expires_at = utc_now() - timedelta(seconds=1)
+    await test_session.commit()
