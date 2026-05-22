@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     rates_provider: str = "cbr"
     cbr_rates_xml_url: str = "https://www.cbr.ru/scripts/XML_daily.asp"
+    exchange_rate_api_usd_url: str = "https://open.er-api.com/v6/latest/USD"
     binance_ar_usdt_ticker_url: str = (
         "https://api.binance.com/api/v3/ticker/price?symbol=ARUSDT"
     )

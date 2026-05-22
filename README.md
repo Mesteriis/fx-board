@@ -26,7 +26,7 @@ Project page: <https://mesteriis.github.io/fx-board/>
 - aiogram 3 bot for app launch, commands, seller notifications, and deal follow-ups.
 - Required Telegram channel access checks with cache and a feature flag.
 - Classified ads for `USD`, `EUR`, `RUB`, `USDT`, `USDC`, and `AR`.
-- Reference rates from the Bank of Russia XML feed plus Binance AR/USDT.
+- Reference rates from Bank of Russia or ExchangeRate API fiat feeds plus Binance AR/USDT.
 - Reports, moderation actions, audit log, and automatic ad hiding thresholds.
 
 ## Repository Layout
@@ -95,7 +95,8 @@ Use `.env.example` as the source of documented settings. Important variables:
 - `TEST_DATABASE_URL`: PostgreSQL database used by backend tests.
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token. Never commit a real token.
 - `TELEGRAM_REQUIRED_CHANNELS_ENABLED`: enables required channel enforcement.
-- `RATES_PROVIDER`, `CBR_RATES_XML_URL`, `BINANCE_AR_USDT_TICKER_URL`: rate source config.
+- `RATES_PROVIDER`, `CBR_RATES_XML_URL`, `EXCHANGE_RATE_API_USD_URL`,
+  `BINANCE_AR_USDT_TICKER_URL`: rate source config.
 - `DEV_AUTH_ENABLED`, `DEV_AUTH_TOKEN`: guarded local auth bypass for development.
 
 The Docker API container runs `alembic upgrade head` before starting Uvicorn.

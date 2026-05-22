@@ -29,6 +29,16 @@ CBR_XML = """<?xml version="1.0" encoding="windows-1251"?>
 </ValCurs>
 """
 BINANCE_AR_USDT_JSON = '{"symbol":"ARUSDT","price":"2.50000000"}'
+EXCHANGE_RATE_API_USD_JSON = """{
+  "result": "success",
+  "base_code": "USD",
+  "time_last_update_utc": "Fri, 22 May 2026 00:02:32 +0000",
+  "rates": {
+    "USD": 1,
+    "RUB": 71.209,
+    "EUR": 0.86267407
+  }
+}"""
 
 
 def test_parse_cbr_rates_xml_extracts_required_fiat_rates() -> None:
@@ -95,6 +105,24 @@ def test_parse_binance_symbol_price_json_extracts_ar_usdt_price() -> None:
         parse_binance_symbol_price_json("{not-json")
 
 
+def test_parse_exchange_rate_api_usd_json_extracts_required_fiat_rates() -> None:
+    from app.services.rates import parse_exchange_rate_api_usd_json
+
+    parsed = parse_exchange_rate_api_usd_json(EXCHANGE_RATE_API_USD_JSON)
+
+    assert parsed.source_date == "Fri, 22 May 2026 00:02:32 +0000"
+    assert parsed.base_rates == {
+        "USD/RUB": Decimal("71.209"),
+        "EUR/RUB": Decimal("82.54450027"),
+    }
+
+    with pytest.raises(ValueError, match="USD base"):
+        parse_exchange_rate_api_usd_json('{"base_code":"EUR","rates":{"RUB":82.5}}')
+
+    with pytest.raises(ValueError, match="missing required ExchangeRate API rate"):
+        parse_exchange_rate_api_usd_json('{"base_code":"USD","rates":{"RUB":71.2}}')
+
+
 async def test_get_rates_fetches_cbr_xml_stores_base_cross_and_stablecoin_rates(
     test_session,
     test_settings,
@@ -146,6 +174,43 @@ async def test_get_rates_fetches_cbr_xml_stores_base_cross_and_stablecoin_rates(
     assert stored[0].rate_date.isoformat() == response.date
     assert {row.pair: f"{row.rate:.4f}" for row in stored}["USD/RUB"] == "71.2090"
     assert {row.source for row in stored} == {"binance", "cbr", "derived"}
+
+
+async def test_get_rates_fetches_exchange_rate_api_fiat_rates(
+    test_session,
+    test_settings,
+    fake_notification_sink,
+) -> None:
+    from app.services.rates import get_rates
+
+    test_settings.rates_provider = "exchange_rate_api"
+    test_settings.exchange_rate_api_usd_url = "https://example.test/exchange-rate-api/usd"
+    test_settings.binance_ar_usdt_ticker_url = "https://example.test/binance/ar"
+
+    async def fetch_remote(url: str) -> str:
+        if url == "https://example.test/exchange-rate-api/usd":
+            return EXCHANGE_RATE_API_USD_JSON
+        if url == "https://example.test/binance/ar":
+            return BINANCE_AR_USDT_JSON
+        raise AssertionError(f"unexpected rates URL: {url}")
+
+    response = await get_rates(
+        test_session,
+        settings=test_settings,
+        fetch_remote=fetch_remote,
+        notification_sink=fake_notification_sink,
+    )
+
+    rates = {item.pair: item.rate for item in response.rates}
+    assert response.source == "exchange_rate_api"
+    assert response.is_stale is False
+    assert rates["USD/RUB"] == "71.2090"
+    assert rates["EUR/RUB"] == "82.5445"
+    assert rates["AR/USD"] == "2.5000"
+    assert fake_notification_sink.intents == []
+
+    stored = (await test_session.execute(select(Rate).order_by(Rate.pair))).scalars().all()
+    assert {row.source for row in stored} == {"binance", "derived", "exchange_rate_api"}
 
 
 async def test_get_rates_refreshes_incomplete_daily_cache(

@@ -24,8 +24,8 @@ from app.telegram.notifications import (
 
 logger = logging.getLogger(__name__)
 
-RATE_RESPONSE_SOURCE = "cbr"
 CBR_SOURCE = "cbr"
+EXCHANGE_RATE_API_SOURCE = "exchange_rate_api"
 BINANCE_SOURCE = "binance"
 DERIVED_SOURCE = "derived"
 FOUR_DECIMALS = Decimal("0.0001")
@@ -67,6 +67,12 @@ class ParsedCbrRates:
     base_rates: dict[str, Decimal]
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedExchangeRateApiRates:
+    source_date: str
+    base_rates: dict[str, Decimal]
+
+
 def parse_cbr_rates_xml(xml_text: str) -> ParsedCbrRates:
     try:
         root = ElementTree.fromstring(xml_text)
@@ -95,6 +101,41 @@ def parse_cbr_rates_xml(xml_text: str) -> ParsedCbrRates:
         raise ValueError(f"missing required CBR rate: {', '.join(missing_codes)}")
 
     return ParsedCbrRates(source_date=source_date, base_rates=base_rates)
+
+
+def parse_exchange_rate_api_usd_json(json_text: str) -> ParsedExchangeRateApiRates:
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid ExchangeRate API JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("invalid ExchangeRate API JSON")
+    if str(payload.get("base_code") or payload.get("base") or "").upper() != "USD":
+        raise ValueError("ExchangeRate API response must use USD base")
+
+    rates = payload.get("rates")
+    if not isinstance(rates, dict):
+        raise ValueError("invalid ExchangeRate API JSON: missing rates")
+
+    try:
+        usd_rub = _parse_positive_decimal(str(rates["RUB"]))
+        usd_eur = _parse_positive_decimal(str(rates["EUR"]))
+    except KeyError as exc:
+        raise ValueError("missing required ExchangeRate API rate") from exc
+
+    source_date = str(
+        payload.get("time_last_update_utc")
+        or payload.get("date")
+        or utc_now().date().isoformat()
+    )
+    return ParsedExchangeRateApiRates(
+        source_date=source_date,
+        base_rates={
+            "USD/RUB": usd_rub,
+            "EUR/RUB": _quantize_eight(usd_rub / usd_eur),
+        },
+    )
 
 
 def derive_reference_rates(base_rates: Mapping[str, Decimal]) -> dict[str, Decimal]:
@@ -168,21 +209,21 @@ async def get_rates(
 
     fetcher = fetch_remote or fetch_rates_remote
     try:
-        if settings.rates_provider != "cbr":
-            raise ValueError(f"unsupported rates provider: {settings.rates_provider}")
-        xml_text = await fetcher(settings.cbr_rates_xml_url)
+        fiat_rates, fiat_source, fiat_raw_payload = await _fetch_fiat_rates(
+            settings,
+            fetcher,
+        )
         ar_usdt_json_text = await fetcher(settings.binance_ar_usdt_ticker_url)
-        parsed = parse_cbr_rates_xml(xml_text)
         all_rates = derive_reference_rates(
             {
-                **parsed.base_rates,
+                **fiat_rates,
                 "AR/USD": parse_binance_symbol_price_json(ar_usdt_json_text),
             }
         )
         now = utc_now()
         raw_payload = json.dumps(
             {
-                "cbr_xml": xml_text,
+                **fiat_raw_payload,
                 "binance_ar_usdt": ar_usdt_json_text,
             },
             ensure_ascii=False,
@@ -192,7 +233,7 @@ async def get_rates(
                 {
                     "pair": pair,
                     "rate": rate,
-                    "source": _source_for_pair(pair, parsed.base_rates),
+                    "source": _source_for_pair(pair, fiat_rates, fiat_source),
                     "rate_date": today,
                     "fetched_at": now,
                     "raw_payload": raw_payload,
@@ -268,6 +309,23 @@ def resolve_pair_rate(
     raise RatesUnavailableError("rate for pair unavailable")
 
 
+async def _fetch_fiat_rates(
+    settings: Settings,
+    fetcher: RemoteRatesFetcher,
+) -> tuple[dict[str, Decimal], str, dict[str, str]]:
+    if settings.rates_provider == CBR_SOURCE:
+        xml_text = await fetcher(settings.cbr_rates_xml_url)
+        parsed = parse_cbr_rates_xml(xml_text)
+        return parsed.base_rates, CBR_SOURCE, {"cbr_xml": xml_text}
+
+    if settings.rates_provider == EXCHANGE_RATE_API_SOURCE:
+        json_text = await fetcher(settings.exchange_rate_api_usd_url)
+        parsed = parse_exchange_rate_api_usd_json(json_text)
+        return parsed.base_rates, EXCHANGE_RATE_API_SOURCE, {"exchange_rate_api_usd": json_text}
+
+    raise ValueError(f"unsupported rates provider: {settings.rates_provider}")
+
+
 def _parse_cbr_unit_rate(valute: ElementTree.Element) -> Decimal:
     unit_rate = (valute.findtext("VunitRate") or "").strip()
     if unit_rate:
@@ -340,9 +398,9 @@ def _rates_cache_complete(rows: list[Rate]) -> bool:
     return REQUIRED_RESPONSE_RATE_PAIRS.issubset({row.pair for row in rows})
 
 
-def _source_for_pair(pair: str, cbr_pairs: Mapping[str, Decimal]) -> str:
-    if pair in cbr_pairs:
-        return CBR_SOURCE
+def _source_for_pair(pair: str, fiat_pairs: Mapping[str, Decimal], fiat_source: str) -> str:
+    if pair in fiat_pairs:
+        return fiat_source
     if pair == "AR/USD":
         return BINANCE_SOURCE
     return DERIVED_SOURCE
@@ -352,11 +410,20 @@ def _rates_response(rows: list[Rate], *, rate_date, is_stale: bool) -> RatesResp
     updated_at = max(row.fetched_at for row in rows)
     return RatesResponse(
         date=rate_date.isoformat(),
-        source=RATE_RESPONSE_SOURCE,
+        source=_response_source_for_rows(rows),
         is_stale=is_stale,
         updated_at=updated_at.isoformat(),
         rates=[RateItem(pair=row.pair, rate=_format_rate(row.rate)) for row in rows],
     )
+
+
+def _response_source_for_rows(rows: list[Rate]) -> str:
+    sources = {row.source for row in rows}
+    if EXCHANGE_RATE_API_SOURCE in sources:
+        return EXCHANGE_RATE_API_SOURCE
+    if CBR_SOURCE in sources:
+        return CBR_SOURCE
+    return DERIVED_SOURCE
 
 
 def _rates_timezone(settings: Settings):
