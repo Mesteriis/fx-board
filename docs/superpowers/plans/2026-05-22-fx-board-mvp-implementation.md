@@ -418,11 +418,11 @@ Create `frontend/package.json`:
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@nuxt/test-utils": "3.14.0",
     "nuxt": "^3.13.0",
     "vue": "^3.5.0"
   },
   "devDependencies": {
+    "@nuxt/test-utils": "3.14.0",
     "@playwright/test": "^1.47.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
@@ -506,7 +506,7 @@ Run:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm test
 npm run build
 ```
@@ -587,7 +587,7 @@ Frontend:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm test
 npm run build
 ```
