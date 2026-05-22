@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError, UnauthorizedError
-from app.core.security import hash_ip, sign_csrf_token, unsigned_csrf_token
+from app.core.security import hash_ip, sign_csrf_token, verified_csrf_cookie_token
 from app.core.time import utc_now
 from app.db.models import Session as DbSession
 from app.db.models import User
@@ -98,7 +98,16 @@ async def me(
 ) -> AuthResponse:
     access = await _ensure_access(db, user=user, settings=settings, telegram_client=telegram_client)
     await db.commit()
-    csrf_token = unsigned_csrf_token(request.cookies.get("csrf_token"))
+    session_id = request.cookies.get(settings.session_cookie_name)
+    csrf_token = (
+        verified_csrf_cookie_token(
+            session_id=session_id,
+            signed_token=request.cookies.get("csrf_token"),
+            secret=settings.session_secret.get_secret_value(),
+        )
+        if session_id
+        else ""
+    )
     return AuthResponse(user=to_user_response(user), access=access, csrf_token=csrf_token)
 
 

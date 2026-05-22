@@ -26,6 +26,7 @@ async def test_session():
 class FakeTelegramClient:
     def __init__(self) -> None:
         self.status_by_chat_id: dict[str, str] = {}
+        self.raw_by_chat_id: dict[str, dict[str, object]] = {}
         self.calls: list[tuple[str, int]] = []
         self.fail = False
 
@@ -34,7 +35,8 @@ class FakeTelegramClient:
         if self.fail:
             raise TelegramApiError("test telegram failure")
         status = self.status_by_chat_id.get(chat_id, "member")
-        return ChatMemberResult(status=status, raw={"status": status})
+        raw = {"status": status, **self.raw_by_chat_id.get(chat_id, {})}
+        return ChatMemberResult(status=status, raw=raw)
 
 
 @pytest.fixture

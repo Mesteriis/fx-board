@@ -108,6 +108,20 @@ async def test_me_returns_current_user_for_valid_session(client) -> None:
     assert me_response.json()["user"]["telegram_id"] == 123
 
 
+async def test_me_does_not_echo_tampered_csrf_cookie(client) -> None:
+    auth_response = await client.post(
+        "/api/auth/telegram-webapp",
+        json={"init_data": signed_init_data()},
+    )
+    assert auth_response.status_code == 200
+    client.cookies.set("csrf_token", "attacker-controlled.invalid-signature")
+
+    me_response = await client.get("/api/auth/me")
+
+    assert me_response.status_code == 200
+    assert me_response.json()["csrf_token"] == ""
+
+
 async def test_auth_checks_required_channels_with_cache(
     client_with_required_channel,
     fake_telegram_client,
@@ -287,11 +301,12 @@ async def test_stale_membership_cache_refreshes_and_updates_membership(
     assert fake_telegram_client.calls == [("@required", 123), ("@required", 123)]
 
 
-async def test_restricted_left_and_kicked_statuses_are_non_member(
+async def test_product_policy_rejects_restricted_left_and_kicked_statuses(
     client_with_required_channel,
     fake_telegram_client,
     test_session,
 ) -> None:
+    fake_telegram_client.raw_by_chat_id["@required"] = {"is_member": True}
     for status in ("restricted", "left", "kicked"):
         fake_telegram_client.status_by_chat_id["@required"] = status
         response = await client_with_required_channel.post(
@@ -311,6 +326,10 @@ async def test_restricted_left_and_kicked_statuses_are_non_member(
         "kicked",
     }
     assert all(not membership.is_member for membership in memberships)
+    restricted_membership = next(
+        membership for membership in memberships if membership.telegram_status == "restricted"
+    )
+    assert json.loads(restricted_membership.raw_response_json)["is_member"] is True
 
 
 async def test_removed_required_channel_is_deactivated_and_not_enforced(

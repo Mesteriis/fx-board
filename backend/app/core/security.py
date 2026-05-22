@@ -39,11 +39,23 @@ def verify_csrf_token(
         raise ForbiddenError("invalid csrf token")
 
 
-def unsigned_csrf_token(signed_token: str | None) -> str:
-    if not signed_token:
+def verified_csrf_cookie_token(
+    *,
+    session_id: str,
+    signed_token: str | None,
+    secret: str,
+) -> str:
+    raw_token = _parse_signed_csrf_token(signed_token)
+    if raw_token is None:
         return ""
-    raw_token, separator, _signature = signed_token.partition(".")
-    if not separator:
+    try:
+        verify_csrf_token(
+            session_id=session_id,
+            signed_token=signed_token,
+            header_token=raw_token,
+            secret=secret,
+        )
+    except ForbiddenError:
         return ""
     return raw_token
 
@@ -57,3 +69,12 @@ def hash_ip(ip_address: str | None, secret: str) -> str | None:
 def _csrf_signature(*, session_id: str, raw_token: str, secret: str) -> str:
     payload = f"{session_id}:{raw_token}".encode()
     return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+
+
+def _parse_signed_csrf_token(signed_token: str | None) -> str | None:
+    if not signed_token:
+        return None
+    raw_token, separator, _signature = signed_token.partition(".")
+    if not raw_token or not separator:
+        return None
+    return raw_token

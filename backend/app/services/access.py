@@ -60,6 +60,16 @@ async def ensure_required_channels(
     )
 
 
+def is_allowed_channel_member(telegram_result: ChatMemberResult) -> bool:
+    """Return whether Telegram membership satisfies the MVP required-channel policy.
+
+    Product policy intentionally rejects ``restricted`` even when Telegram's raw
+    ``ChatMemberRestricted.is_member`` flag is true. Only creator, administrator,
+    and member satisfy required-channel access for this MVP.
+    """
+    return telegram_result.status in MEMBER_STATUSES
+
+
 async def _get_required_channels(
     db: AsyncSession,
     *,
@@ -124,7 +134,7 @@ async def _get_or_refresh_membership(
         chat_id=channel.chat_id,
         user_id=user.telegram_id,
     )
-    is_member = telegram_result.status in MEMBER_STATUSES
+    is_member = is_allowed_channel_member(telegram_result)
     expires_at = now + timedelta(seconds=MEMBERSHIP_CACHE_TTL_SECONDS)
     raw_response_json = json.dumps(telegram_result.raw, separators=(",", ":"), sort_keys=True)
 
