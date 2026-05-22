@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.limits import check_rate_limit
 from app.core.time import utc_now
 from app.db.models import RequiredChannel, User, UserChannelMembership
 from app.schemas.auth import AccessResponse, RequiredChannelResponse
@@ -130,6 +131,13 @@ async def _get_or_refresh_membership(
     if membership is not None and membership.expires_at > now:
         return membership
 
+    await check_rate_limit(
+        db,
+        key=f"user:{user.id}",
+        action="required_channel_check",
+        limit=10,
+        window_seconds=600,
+    )
     telegram_result = await telegram_client.get_chat_member(
         chat_id=channel.chat_id,
         user_id=user.telegram_id,

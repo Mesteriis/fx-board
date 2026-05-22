@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError
+from app.core.limits import check_rate_limit
 from app.db.models import User
 from app.db.session import get_session
 from app.routers.auth import get_telegram_client
@@ -95,7 +96,14 @@ async def create_ad(
     settings: Annotated[Settings, Depends(get_settings)],
     user: Annotated[User, Depends(require_mutating_user)],
 ) -> AdDetailResponse:
-    # Task 5 rate-limit enforcement belongs at this boundary once core.limits exists.
+    await check_rate_limit(
+        db,
+        key=f"user:{user.id}",
+        action="ads.create",
+        limit=5,
+        window_seconds=3600,
+    )
+    await db.commit()
     ad = await ads_service.create_ad(db, user=user, payload=payload, settings=settings)
     await db.commit()
     return ads_service.ad_detail_response(ad, user)
@@ -151,6 +159,14 @@ async def update_ad(
     db: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(require_mutating_user)],
 ) -> AdDetailResponse:
+    await check_rate_limit(
+        db,
+        key=f"user:{user.id}",
+        action="ads.update",
+        limit=30,
+        window_seconds=3600,
+    )
+    await db.commit()
     ad = await ads_service.update_ad(db, ad_id=ad_id, user=user, payload=payload)
     await db.commit()
     return ads_service.ad_detail_response(ad, user)
@@ -174,7 +190,6 @@ async def contact_ad(
     settings: Annotated[Settings, Depends(get_settings)],
     user: Annotated[User, Depends(require_mutating_user)],
 ) -> ContactAttemptResponse:
-    # Task 5 rate-limit enforcement belongs at this boundary once core.limits exists.
     contact_attempt, telegram_url = await contacts_service.create_contact_attempt(
         db,
         ad_id=ad_id,

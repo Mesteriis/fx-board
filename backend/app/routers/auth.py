@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError, UnauthorizedError
+from app.core.limits import check_rate_limit
 from app.core.security import hash_ip, sign_csrf_token, verified_csrf_cookie_token
 from app.core.time import utc_now
 from app.db.models import Session as DbSession
@@ -44,6 +45,19 @@ async def telegram_webapp_auth(
     settings: Annotated[Settings, Depends(get_settings)],
     telegram_client: Annotated[TelegramMembershipClient, Depends(get_telegram_client)],
 ) -> AuthResponse:
+    ip_hash = hash_ip(
+        request.client.host if request.client else None,
+        settings.session_secret.get_secret_value(),
+    )
+    await check_rate_limit(
+        db,
+        key=f"ip:{ip_hash or 'unknown'}",
+        action="auth.telegram_webapp",
+        limit=10,
+        window_seconds=60,
+    )
+    await db.commit()
+
     try:
         telegram_user = verify_telegram_init_data(
             init_data=payload.init_data,
@@ -68,10 +82,7 @@ async def telegram_webapp_auth(
         user_id=user.id,
         ttl_seconds=settings.session_ttl_seconds,
         user_agent=request.headers.get("user-agent"),
-        ip_hash=hash_ip(
-            request.client.host if request.client else None,
-            settings.session_secret.get_secret_value(),
-        ),
+        ip_hash=ip_hash,
     )
     await db.commit()
 
