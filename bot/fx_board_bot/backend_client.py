@@ -48,6 +48,25 @@ class BackendClient:
                 raise ValueError("backend response must be an object")
             return dict(body)
 
+    async def mark_followup_prompt_sent(
+        self,
+        *,
+        contact_attempt_id: int,
+        prompt_type: str,
+    ) -> dict[str, object]:
+        async with self._client() as client:
+            response = await client.post(
+                f"{self._base_url}/api/internal/contact-followups/"
+                f"{contact_attempt_id}/prompt-sent",
+                json={"prompt_type": prompt_type},
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError("backend response must be an object")
+            return dict(body)
+
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=self._timeout, transport=self._transport)
 

@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError
 from app.db.session import get_session
-from app.services.contacts import apply_contact_answer, claim_due_contact_attempts
+from app.services.contacts import (
+    apply_contact_answer,
+    claim_due_contact_attempts,
+    mark_contact_followup_prompt_sent,
+)
 
 telegram_router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 internal_router = APIRouter(prefix="/api/internal", tags=["internal"])
@@ -17,6 +21,10 @@ internal_router = APIRouter(prefix="/api/internal", tags=["internal"])
 class ContactFollowupAnswerRequest(BaseModel):
     actor_telegram_id: int
     answer: Literal["yes", "no"]
+
+
+class ContactFollowupPromptSentRequest(BaseModel):
+    prompt_type: Literal["initiator", "author"]
 
 
 @telegram_router.post("/webhook")
@@ -50,6 +58,27 @@ async def claim_contact_followups(
     return {"items": items}
 
 
+@internal_router.post("/contact-followups/{contact_attempt_id}/prompt-sent")
+async def contact_followup_prompt_sent(
+    contact_attempt_id: int,
+    payload: ContactFollowupPromptSentRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+    x_internal_bot_secret: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    _require_internal_bot_secret(
+        provided=x_internal_bot_secret,
+        settings=settings,
+    )
+    result = await mark_contact_followup_prompt_sent(
+        db,
+        contact_attempt_id=contact_attempt_id,
+        prompt_type=payload.prompt_type,
+    )
+    await db.commit()
+    return result
+
+
 @internal_router.post("/contact-followups/{contact_attempt_id}/answer")
 async def answer_contact_followup(
     contact_attempt_id: int,
@@ -77,7 +106,7 @@ def _require_internal_bot_secret(
     provided: str | None,
     settings: Settings,
 ) -> None:
-    expected = settings.telegram_webhook_secret.get_secret_value()
+    expected = settings.telegram_internal_bot_secret.get_secret_value()
     if provided is None or not compare_digest(provided, expected):
         raise ForbiddenError("invalid internal bot secret")
 

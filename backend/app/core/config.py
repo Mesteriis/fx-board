@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     telegram_bot_username: str
     telegram_webhook_secret: SecretStr
+    telegram_internal_bot_secret: SecretStr = Field(min_length=32)
     telegram_required_channels: str = ""
     admin_telegram_ids: str = ""
 

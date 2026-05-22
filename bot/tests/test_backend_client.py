@@ -54,3 +54,30 @@ async def test_answer_followup_sends_actor_answer_and_internal_secret_header() -
     assert requests[0].url.path == "/api/internal/contact-followups/15/answer"
     assert requests[0].headers["X-Internal-Bot-Secret"] == "secret"
     assert requests[0].read() == b'{"actor_telegram_id":99,"answer":"no"}'
+
+
+@pytest.mark.asyncio
+async def test_mark_followup_prompt_sent_sends_prompt_type_and_secret_header() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"action": "prompt_recorded"})
+
+    client = BackendClient(
+        base_url="https://backend.test",
+        internal_secret="secret",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.mark_followup_prompt_sent(
+        contact_attempt_id=16,
+        prompt_type="author",
+    )
+
+    assert result == {"action": "prompt_recorded"}
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/api/internal/contact-followups/16/prompt-sent"
+    assert requests[0].headers["X-Internal-Bot-Secret"] == "secret"
+    assert requests[0].read() == b'{"prompt_type":"author"}'

@@ -89,7 +89,11 @@ async def deal_callback_handler(
         return
 
     if result.get("action") == "ask_author":
-        await send_author_confirmation_prompt(callback.bot, result)
+        await send_author_confirmation_prompt(
+            callback.bot,
+            result,
+            prompt_client=backend_client,
+        )
     await callback.answer(_answer_acknowledgement(result))
 
 
@@ -125,7 +129,7 @@ async def run_bot() -> None:
     dispatcher = Dispatcher()
     backend_client = BackendClient(
         base_url=settings.backend_base_url,
-        internal_secret=settings.telegram_webhook_secret.get_secret_value(),
+        internal_secret=settings.telegram_internal_bot_secret.get_secret_value(),
     )
     register_handlers(dispatcher, backend_client=backend_client)
     await configure_bot(bot)

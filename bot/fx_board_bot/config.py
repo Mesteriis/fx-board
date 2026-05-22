@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,7 @@ class BotSettings(BaseSettings):
 
     telegram_bot_token: SecretStr
     telegram_webhook_secret: SecretStr
+    telegram_internal_bot_secret: SecretStr = Field(min_length=32)
     app_base_url: str = "http://localhost:3000"
     backend_base_url: str = "http://localhost:8000"
     admin_telegram_ids: str = ""

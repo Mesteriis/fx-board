@@ -227,6 +227,8 @@ class ContactAttempt(Base):
     ad_id: Mapped[int] = mapped_column(ForeignKey("ads.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False)
     followup_due_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    initiator_prompt_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    author_prompt_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     initiator_answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     author_answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

@@ -63,6 +63,7 @@ def test_settings() -> Settings:
         telegram_bot_token="123456:test",
         telegram_bot_username="test_bot",
         telegram_webhook_secret="test_webhook_secret",
+        telegram_internal_bot_secret="test_internal_bot_secret_long_enough",
         telegram_required_channels="",
         admin_telegram_ids="123",
     )

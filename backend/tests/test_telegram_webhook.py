@@ -38,3 +38,16 @@ async def test_internal_contact_followups_require_secret(client) -> None:
 
     assert missing_response.status_code == 403
     assert wrong_response.status_code == 403
+
+
+async def test_internal_contact_followups_reject_webhook_secret(client, test_settings) -> None:
+    response = await client.post(
+        "/api/internal/contact-followups/claim",
+        headers={
+            "X-Internal-Bot-Secret": (
+                test_settings.telegram_webhook_secret.get_secret_value()
+            )
+        },
+    )
+
+    assert response.status_code == 403

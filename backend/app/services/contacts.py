@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -18,7 +18,9 @@ INITIATOR_NO_DEAL = "INITIATOR_NO_DEAL"
 WAITING_AUTHOR_CONFIRMATION = "WAITING_AUTHOR_CONFIRMATION"
 COMPLETED_CONFIRMED = "COMPLETED_CONFIRMED"
 AUTHOR_REJECTED = "AUTHOR_REJECTED"
+EXPIRED = "EXPIRED"
 COMPLETED = "COMPLETED"
+FOLLOWUP_ANSWER_TTL = timedelta(hours=24)
 
 ContactFollowupItem = dict[str, object]
 ContactAnswerResult = dict[str, object]
@@ -51,7 +53,7 @@ async def create_contact_attempt(
     open_attempts = await db.execute(
         select(ContactAttempt).where(
             ContactAttempt.initiator_user_id == initiator.id,
-            ContactAttempt.status.in_((OPENED, ASKED_INITIATOR)),
+            ContactAttempt.status.in_((OPENED, ASKED_INITIATOR, WAITING_AUTHOR_CONFIRMATION)),
         )
     )
     for attempt in open_attempts.scalars():
@@ -82,6 +84,7 @@ async def claim_due_contact_attempts(
 
     await begin_sqlite_immediate(db)
     now = utc_now()
+    await _expire_stale_contact_attempts(db, now=now)
     initiator_user = aliased(User)
     author_user = aliased(User)
     result = await db.execute(
@@ -90,7 +93,13 @@ async def claim_due_contact_attempts(
         .join(author_user, author_user.id == ContactAttempt.author_user_id)
         .join(Ad, Ad.id == ContactAttempt.ad_id)
         .where(
-            ContactAttempt.status == OPENED,
+            or_(
+                ContactAttempt.status == OPENED,
+                (
+                    (ContactAttempt.status == WAITING_AUTHOR_CONFIRMATION)
+                    & ContactAttempt.author_prompt_sent_at.is_(None)
+                ),
+            ),
             ContactAttempt.followup_due_at <= now,
         )
         .order_by(ContactAttempt.followup_due_at, ContactAttempt.id)
@@ -99,12 +108,67 @@ async def claim_due_contact_attempts(
 
     items: list[ContactFollowupItem] = []
     for attempt, initiator, author, ad in result.all():
-        attempt.status = ASKED_INITIATOR
-        attempt.updated_at = now
-        items.append(_followup_item(attempt=attempt, initiator=initiator, author=author, ad=ad))
+        items.append(
+            _followup_item(
+                attempt=attempt,
+                initiator=initiator,
+                author=author,
+                ad=ad,
+                prompt_type=(
+                    "author" if attempt.status == WAITING_AUTHOR_CONFIRMATION else "initiator"
+                ),
+            )
+        )
 
     await db.flush()
     return items
+
+
+async def mark_contact_followup_prompt_sent(
+    db: AsyncSession,
+    *,
+    contact_attempt_id: int,
+    prompt_type: str,
+) -> ContactAnswerResult:
+    normalized_prompt_type = prompt_type.strip().lower()
+    if normalized_prompt_type not in {"initiator", "author"}:
+        raise AppError("invalid prompt type")
+
+    await begin_sqlite_immediate(db)
+    row = await _get_contact_attempt_detail(db, contact_attempt_id=contact_attempt_id)
+    if row is None:
+        raise NotFoundError("contact attempt not found")
+
+    attempt, initiator, author, ad = row
+    now = utc_now()
+    if normalized_prompt_type == "initiator":
+        if attempt.status != OPENED or attempt.followup_due_at > now:
+            return _answer_result(attempt=attempt, action="stale")
+        attempt.status = ASKED_INITIATOR
+        attempt.initiator_prompt_sent_at = now
+        attempt.followup_due_at = now + FOLLOWUP_ANSWER_TTL
+    else:
+        if (
+            attempt.status != WAITING_AUTHOR_CONFIRMATION
+            or attempt.author_prompt_sent_at is not None
+            or attempt.followup_due_at > now
+        ):
+            return _answer_result(attempt=attempt, action="stale")
+        attempt.author_prompt_sent_at = now
+        attempt.followup_due_at = now + FOLLOWUP_ANSWER_TTL
+
+    attempt.updated_at = now
+    await db.flush()
+    return {
+        **_answer_result(attempt=attempt, action="prompt_recorded"),
+        **_followup_item(
+            attempt=attempt,
+            initiator=initiator,
+            author=author,
+            ad=ad,
+            prompt_type=normalized_prompt_type,
+        ),
+    }
 
 
 async def apply_contact_answer(
@@ -135,16 +199,22 @@ async def apply_contact_answer(
             attempt.updated_at = now
             await db.flush()
             return _answer_result(attempt=attempt, action="none")
-        if attempt.status != ASKED_INITIATOR:
-            raise AppError("contact attempt cannot be answered in its current state")
 
         attempt.status = WAITING_AUTHOR_CONFIRMATION
         attempt.initiator_answered_at = now
+        attempt.author_prompt_sent_at = None
+        attempt.followup_due_at = now
         attempt.updated_at = now
         await db.flush()
         return {
             **_answer_result(attempt=attempt, action="ask_author"),
-            **_followup_item(attempt=attempt, initiator=initiator, author=author, ad=ad),
+            **_followup_item(
+                attempt=attempt,
+                initiator=initiator,
+                author=author,
+                ad=ad,
+                prompt_type="author",
+            ),
         }
 
     if attempt.status == WAITING_AUTHOR_CONFIRMATION:
@@ -154,6 +224,8 @@ async def apply_contact_answer(
         attempt.author_answered_at = now
         attempt.updated_at = now
         if normalized_answer == "yes":
+            if ad.status != ACTIVE or ad.expires_at <= now:
+                raise AppError("ad is no longer active")
             attempt.status = COMPLETED_CONFIRMED
             ad.status = COMPLETED
             ad.completed_at = now
@@ -185,12 +257,29 @@ async def _get_contact_attempt_detail(
     return result.one_or_none()
 
 
+async def _expire_stale_contact_attempts(db: AsyncSession, *, now) -> None:
+    result = await db.execute(
+        select(ContactAttempt).where(
+            ContactAttempt.status.in_((ASKED_INITIATOR, WAITING_AUTHOR_CONFIRMATION)),
+            ContactAttempt.followup_due_at <= now,
+            or_(
+                ContactAttempt.status == ASKED_INITIATOR,
+                ContactAttempt.author_prompt_sent_at.is_not(None),
+            ),
+        )
+    )
+    for attempt in result.scalars():
+        attempt.status = EXPIRED
+        attempt.updated_at = now
+
+
 def _followup_item(
     *,
     attempt: ContactAttempt,
     initiator: User,
     author: User,
     ad: Ad,
+    prompt_type: str,
 ) -> ContactFollowupItem:
     amount = str(ad.amount)
     pair = f"{ad.base_currency}/{ad.quote_currency}"
@@ -200,6 +289,7 @@ def _followup_item(
         "initiator_telegram_id": initiator.telegram_id,
         "author_telegram_id": author.telegram_id,
         "ad_id": ad.id,
+        "prompt_type": prompt_type,
         "side": ad.side,
         "pair": pair,
         "amount": amount,
