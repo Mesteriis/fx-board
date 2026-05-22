@@ -101,7 +101,11 @@ async def deal_callback_handler(
 
 async def configure_bot(bot: Bot) -> None:
     settings = get_bot_settings()
-    await bot.set_my_commands(public_commands())
+    try:
+        await bot.set_my_commands(public_commands())
+    except TelegramAPIError:
+        logger.info("Telegram command setup is unavailable", exc_info=True)
+
     try:
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(

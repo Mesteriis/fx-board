@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-fx_board}
       POSTGRES_USER: ${POSTGRES_USER:-fx_board}
@@ -21,6 +22,7 @@ services:
     build:
       context: ..
       dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
     env_file:
       - path: ../.env
         required: false
@@ -36,6 +38,7 @@ services:
     build:
       context: ..
       dockerfile: docker/frontend.Dockerfile
+    restart: unless-stopped
     environment:
       NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-/api}
       NUXT_API_PROXY_TARGET: ${NUXT_API_PROXY_TARGET:-http://api:8000}
@@ -49,6 +52,7 @@ services:
     build:
       context: ..
       dockerfile: docker/bot.Dockerfile
+    restart: unless-stopped
     env_file:
       - path: ../.env
         required: false
