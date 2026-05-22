@@ -27,3 +27,14 @@ async def test_webhook_accepts_valid_secret(client, test_settings) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+async def test_internal_contact_followups_require_secret(client) -> None:
+    missing_response = await client.post("/api/internal/contact-followups/claim")
+    wrong_response = await client.post(
+        "/api/internal/contact-followups/claim",
+        headers={"X-Internal-Bot-Secret": "wrong"},
+    )
+
+    assert missing_response.status_code == 403
+    assert wrong_response.status_code == 403

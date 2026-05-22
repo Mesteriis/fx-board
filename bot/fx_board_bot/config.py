@@ -8,6 +8,7 @@ class BotSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     telegram_bot_token: SecretStr
+    telegram_webhook_secret: SecretStr
     app_base_url: str = "http://localhost:3000"
     backend_base_url: str = "http://localhost:8000"
     admin_telegram_ids: str = ""

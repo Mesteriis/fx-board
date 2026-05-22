@@ -230,6 +230,241 @@ async def test_contact_cancels_previous_opened_attempt_for_same_initiator_and_ad
     assert [attempt.status for attempt in attempts] == ["CANCELED_BY_NEW_CONTACT", "OPENED"]
 
 
+async def test_claim_due_followups_ignores_canceled_attempts_and_marks_claimed(
+    client,
+    authenticate,
+    test_session,
+    test_settings,
+) -> None:
+    first_author_csrf = await authenticate(client, telegram_id=5201, username="first_author")
+    first_ad_id = await create_ad(client, first_author_csrf)
+    second_author_csrf = await authenticate(client, telegram_id=5202, username="second_author")
+    second_ad_id = await create_ad(
+        client,
+        second_author_csrf,
+        side="BUY",
+        base_currency="EUR",
+        quote_currency="USD",
+        amount="250.00",
+    )
+    initiator_csrf = await authenticate(client, telegram_id=5203, username="initiator")
+
+    first_contact = await client.post(
+        f"/api/ads/{first_ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    second_contact = await client.post(
+        f"/api/ads/{second_ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    assert first_contact.status_code == 201
+    assert second_contact.status_code == 201
+
+    due_at = utc_now() - timedelta(minutes=1)
+    attempts = (
+        await test_session.execute(select(ContactAttempt).order_by(ContactAttempt.id))
+    ).scalars().all()
+    for attempt in attempts:
+        attempt.followup_due_at = due_at
+    await test_session.commit()
+
+    response = await client.post(
+        "/api/internal/contact-followups/claim",
+        headers={
+            "X-Internal-Bot-Secret": test_settings.telegram_webhook_secret.get_secret_value()
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["contact_attempt_id"] == second_contact.json()["contact_attempt_id"]
+    assert item["initiator_telegram_id"] == 5203
+    assert item["author_telegram_id"] == 5202
+    assert item["ad_id"] == second_ad_id
+    assert item["side"] == "BUY"
+    assert item["pair"] == "EUR/USD"
+    assert item["amount"] == "250.00000000"
+    assert "BUY 250.00000000 EUR/USD" in item["summary"]
+
+    attempts = (
+        await test_session.execute(select(ContactAttempt).order_by(ContactAttempt.id))
+    ).scalars().all()
+    assert [attempt.status for attempt in attempts] == [
+        "CANCELED_BY_NEW_CONTACT",
+        "ASKED_INITIATOR",
+    ]
+    await test_session.commit()
+
+    second_response = await client.post(
+        "/api/internal/contact-followups/claim",
+        headers={
+            "X-Internal-Bot-Secret": test_settings.telegram_webhook_secret.get_secret_value()
+        },
+    )
+    assert second_response.status_code == 200
+    assert second_response.json() == {"items": []}
+
+
+async def test_initiator_no_answer_closes_attempt(
+    client,
+    authenticate,
+    test_session,
+    test_settings,
+) -> None:
+    author_csrf = await authenticate(client, telegram_id=5204, username="author")
+    ad_id = await create_ad(client, author_csrf)
+    initiator_csrf = await authenticate(client, telegram_id=5205, username="initiator")
+    contact_response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    contact_attempt_id = contact_response.json()["contact_attempt_id"]
+    attempt = await test_session.get(ContactAttempt, contact_attempt_id)
+    assert attempt is not None
+    attempt.status = "ASKED_INITIATOR"
+    await test_session.commit()
+
+    response = await client.post(
+        f"/api/internal/contact-followups/{contact_attempt_id}/answer",
+        json={"actor_telegram_id": 5205, "answer": "no"},
+        headers={
+            "X-Internal-Bot-Secret": test_settings.telegram_webhook_secret.get_secret_value()
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "INITIATOR_NO_DEAL"
+    attempt = await test_session.get(ContactAttempt, contact_attempt_id)
+    assert attempt is not None
+    assert attempt.status == "INITIATOR_NO_DEAL"
+    assert attempt.initiator_answered_at is not None
+
+
+async def test_author_confirmation_yes_completes_ad_and_removes_from_active_board(
+    client,
+    authenticate,
+    test_session,
+    test_settings,
+) -> None:
+    author_csrf = await authenticate(client, telegram_id=5206, username="author")
+    ad_id = await create_ad(client, author_csrf)
+    initiator_csrf = await authenticate(client, telegram_id=5207, username="initiator")
+    contact_response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    contact_attempt_id = contact_response.json()["contact_attempt_id"]
+    attempt = await test_session.get(ContactAttempt, contact_attempt_id)
+    assert attempt is not None
+    attempt.status = "ASKED_INITIATOR"
+    await test_session.commit()
+
+    initiator_response = await client.post(
+        f"/api/internal/contact-followups/{contact_attempt_id}/answer",
+        json={"actor_telegram_id": 5207, "answer": "yes"},
+        headers={
+            "X-Internal-Bot-Secret": test_settings.telegram_webhook_secret.get_secret_value()
+        },
+    )
+
+    assert initiator_response.status_code == 200
+    assert initiator_response.json()["status"] == "WAITING_AUTHOR_CONFIRMATION"
+    assert initiator_response.json()["action"] == "ask_author"
+    assert initiator_response.json()["author_telegram_id"] == 5206
+
+    author_response = await client.post(
+        f"/api/internal/contact-followups/{contact_attempt_id}/answer",
+        json={"actor_telegram_id": 5206, "answer": "yes"},
+        headers={
+            "X-Internal-Bot-Secret": test_settings.telegram_webhook_secret.get_secret_value()
+        },
+    )
+
+    assert author_response.status_code == 200
+    assert author_response.json()["status"] == "COMPLETED_CONFIRMED"
+    ad = await test_session.get(Ad, ad_id)
+    assert ad is not None
+    assert ad.status == "COMPLETED"
+    assert ad.completed_at is not None
+    assert ad.updated_at == ad.completed_at
+    attempt = await test_session.get(ContactAttempt, contact_attempt_id)
+    assert attempt is not None
+    assert attempt.status == "COMPLETED_CONFIRMED"
+    assert attempt.author_answered_at is not None
+
+    active_response = await client.get("/api/ads")
+    assert active_response.status_code == 200
+    assert active_response.json()["sell"] == []
+    assert active_response.json()["buy"] == []
+
+
+async def test_author_no_rejects_waiting_attempt_without_completing_ad(
+    client,
+    authenticate,
+    test_session,
+    test_settings,
+) -> None:
+    author_csrf = await authenticate(client, telegram_id=5208, username="author")
+    ad_id = await create_ad(client, author_csrf)
+    initiator_csrf = await authenticate(client, telegram_id=5209, username="initiator")
+    contact_response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    contact_attempt_id = contact_response.json()["contact_attempt_id"]
+    attempt = await test_session.get(ContactAttempt, contact_attempt_id)
+    assert attempt is not None
+    attempt.status = "WAITING_AUTHOR_CONFIRMATION"
+    await test_session.commit()
+
+    response = await client.post(
+        f"/api/internal/contact-followups/{contact_attempt_id}/answer",
+        json={"actor_telegram_id": 5208, "answer": "no"},
+        headers={
+            "X-Internal-Bot-Secret": test_settings.telegram_webhook_secret.get_secret_value()
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "AUTHOR_REJECTED"
+    ad = await test_session.get(Ad, ad_id)
+    assert ad is not None
+    assert ad.status == "ACTIVE"
+
+
+async def test_answer_rejects_wrong_actor(
+    client,
+    authenticate,
+    test_session,
+    test_settings,
+) -> None:
+    author_csrf = await authenticate(client, telegram_id=5210, username="author")
+    ad_id = await create_ad(client, author_csrf)
+    initiator_csrf = await authenticate(client, telegram_id=5211, username="initiator")
+    contact_response = await client.post(
+        f"/api/ads/{ad_id}/contact",
+        headers={"X-CSRF-Token": initiator_csrf},
+    )
+    contact_attempt_id = contact_response.json()["contact_attempt_id"]
+    attempt = await test_session.get(ContactAttempt, contact_attempt_id)
+    assert attempt is not None
+    attempt.status = "ASKED_INITIATOR"
+    await test_session.commit()
+
+    response = await client.post(
+        f"/api/internal/contact-followups/{contact_attempt_id}/answer",
+        json={"actor_telegram_id": 5210, "answer": "yes"},
+        headers={
+            "X-Internal-Bot-Secret": test_settings.telegram_webhook_secret.get_secret_value()
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "actor cannot answer this contact attempt"
+
+
 async def test_database_rejects_two_opened_contacts_for_same_initiator(
     client,
     authenticate,
