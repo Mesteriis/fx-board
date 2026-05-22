@@ -33,7 +33,7 @@ Frontend:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm test
 npm run build
 ```
